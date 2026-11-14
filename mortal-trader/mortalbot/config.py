@@ -59,7 +59,7 @@ class ExecutionConfig:
     slippage_bps: Decimal = Decimal("10")
     poll_seconds: int = 30
     # Used for backtests, and as a fallback if the exchange does not publish a minimum.
-    paper_min_notional_php: Decimal = Decimal("100")
+    paper_min_notional_php: Decimal = Decimal("50")  # Coins.ph minimum, Nov 2026
     paper_min_qty: Decimal = Decimal("0.00000001")
     paper_step_size: Decimal = Decimal("0.00000001")
     base_url: str = "https://api.pro.coins.ph"

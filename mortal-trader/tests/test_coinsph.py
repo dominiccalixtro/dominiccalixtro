@@ -86,6 +86,25 @@ class Parsing(unittest.TestCase):
         self.assertEqual((r.min_qty, r.step_size, r.min_notional, r.quote_step),
                          (D("0.000001"), D("0.000001"), D("50"), D("0.01")))
 
+    def test_real_btcphp_shape(self):
+        # Captured from the live Coins.ph API (Nov 2026), filters trimmed to the ones the bot reads.
+        live = {"symbol": "BTCPHP", "status": "trading", "baseAsset": "BTC", "baseAssetPrecision": 7,
+                "quoteAsset": "PHP", "quoteAssetPrecision": 8, "filters": [
+                    {"filterType": "PRICE_FILTER", "minPrice": "0.1", "maxPrice": "99999999999.00000000", "tickSize": "0.1"},
+                    {"filterType": "LOT_SIZE", "minQty": "0.0000001", "maxQty": "99999999999.00000000", "stepSize": "0.0000001"},
+                    {"filterType": "NOTIONAL", "minNotional": "50", "maxNotional": "6000000"},
+                    {"filterType": "MIN_NOTIONAL", "minNotional": "50"}]}
+        r = parse_symbol_rules(live)
+        self.assertEqual((r.min_notional, r.step_size, r.quote_step), (D("50"), D("0.0000001"), D("0.01")))
+        self.assertEqual(CoinsPhClient.buy_params(r, D("1234.56789"))["quoteOrderQty"], "1234.56")
+
+    def test_unauthorized_error_shape(self):
+        # What the live /openapi/v1/order/test answers without a key.
+        c, _ = client({("POST", "/openapi/v1/order/test"): (401, {"code": -1002, "msg": "You are not authorized to execute this request"})})
+        with self.assertRaises(ExchangeError) as cm:
+            c.test_order({"symbol": "BTCPHP"})
+        self.assertEqual(cm.exception.code, -1002)
+
     def test_exchange_errors_raise(self):
         c, _ = client({("GET", "/openapi/v1/exchangeInfo"): (400, {"code": -1121, "msg": "Invalid symbol."})})
         with self.assertRaises(ExchangeError) as cm:

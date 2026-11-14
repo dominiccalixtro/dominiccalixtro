@@ -286,7 +286,9 @@ def parse_symbol_rules(s: dict) -> SymbolRules:
         step_size=Decimal(str(lot.get("stepSize", "0.00000001"))),
         min_notional=Decimal(str(notional.get("minNotional", "0"))),
         tick_size=Decimal(str(price.get("tickSize", "0.01"))),
-        quote_step=_precision_step(quote_digits, Decimal("0.01")),
+        # Coins.ph reports quoteAssetPrecision 8 for BTCPHP (the asset's internal precision). Order
+        # amounts in pesos never need more than centavos, and fewer decimals are always accepted.
+        quote_step=max(_precision_step(quote_digits, Decimal("0.01")), Decimal("0.01")),
     )
 
 

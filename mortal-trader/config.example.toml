@@ -67,5 +67,5 @@ rest_candles = 12         # rest this many hours after the losing streak
 fee_rate = 0.003          # ASSUMPTION: set to your Coins.ph fee tier
 slippage_bps = 10
 poll_seconds = 30
-paper_min_notional_php = 100
+paper_min_notional_php = 50     # Coins.ph minimum order (Nov 2026)
 base_url = "https://api.pro.coins.ph"

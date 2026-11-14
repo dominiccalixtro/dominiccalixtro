@@ -4,7 +4,7 @@ An autonomous crypto trader whose budget is its life. You give it ₱5,000 and w
 
 It trades on **Coins.ph** (Philippines), in Python.
 
-> **Status: v0.2.** The bot logic, guardrails, paper trading and backtests are tested (86 tests). The Claude brain is tested against a simulated API, and the Coins.ph adapter against canned responses. Neither has run against the live services yet. Follow [the path to real money](#path-to-real-money) before funding it.
+> **Status: v0.2.** The bot logic, guardrails, paper trading and backtests are tested (88 tests). A dry run on **live Coins.ph market data and live news** worked end to end. Two things haven't touched the real services: the Claude call itself (tested against a simulated API) and order placement (tested against canned responses). Follow [the path to real money](#path-to-real-money) before funding it.
 
 ---
 
@@ -77,7 +77,7 @@ Server-side fallback is on (`fallbacks="default"`): if the model declines a requ
 | Platform | Retail API? | Verdict |
 |---|---|---|
 | **Coins.ph** | **Yes**, self-serve: one key per account (Security → API Management). BSP-licensed since 2017; peso pairs | **Target** |
-| Gotrade | A "Gotrade Global Trading API" exists for US stocks (orders, portfolio, market data). Access requires asking a Gotrade rep to enable it; tokens come from the app. Philippine eligibility is unconfirmed, and its documented base URL is on a non-Gotrade domain | **Maybe later.** Ask Gotrade support in-app whether a PH account can get API access |
+| Gotrade | **Yes, but gated.** The Gotrade Trading API covers US stocks: create/list/get/cancel orders, account balance, market and fractional (dollar-amount) orders. A Gotrade rep must enable API access on your account; then you generate a 1-year token in the Gotrade Global app. The page never mentions the Philippines, and the API lives on `api.charlie.gotrade.admin.tr8.tech` | **Second venue later.** Ask Gotrade support in-app to enable API access. If they do, an adapter is a contained addition |
 | Invesko | No API found. Singapore entity (WECAP Ventures); US stocks through a partner broker; states it is not itself a broker | Can't integrate |
 | PDAX | Institutional only | Not for retail |
 | PSE brokers (COL, FirstMetroSec...) | No public API; PSE rules have restricted algorithmic trading | Not possible today |
@@ -94,7 +94,7 @@ Requires Python 3.11+ and `pip install -r requirements.txt` (only the Claude bra
 ```bash
 cd mortal-trader
 cp config.example.toml config.toml
-python3 -m unittest discover -s tests              # 86 tests, no network, no keys
+python3 -m unittest discover -s tests              # 88 tests, no network, no keys
 
 export ANTHROPIC_API_KEY=...                       # from the Claude Console (separate from the Claude app)
 python3 -m mortalbot paper                          # Claude brain, live prices, fake money
@@ -132,14 +132,18 @@ It has to run somewhere that never sleeps: your phone can't host it, and a sleep
 
 ## What is verified and what isn't
 
-| Verified in this repo's tests | Not yet verified |
+| Verified | Not yet verified |
 |---|---|
-| Guardrails, including a prompt-injection attempt | A real Claude API call (no key in the build sandbox) |
-| Request shape for the Claude API (model, strict tool, web search, fallbacks, effort, caching) | Real thinking costs; the estimates above are back-of-envelope |
-| Refusal, pause/resume and "forgot to decide" handling; API errors never kill the bot | Any call to live Coins.ph; the build sandbox couldn't reach it |
-| Wake-ups, daily budget, thinking charged to life, death by overthinking | Live response shapes for klines, tickers and fills |
-| RSS/Atom parsing, malicious-feed rejection (XXE / billion laughs) | Whether the default news feeds allow automated reading |
-| Ledger, stop-loss, take-profit, permanent death, restart persistence | Real slippage on Coins.ph's order book |
+| **Live (Nov 2026):** Coins.ph server time, market rules for BTC/ETH/SOL/XRP (₱50 minimum order), bulk prices, hourly candles | A real Claude API call (no key in the build environment) |
+| **Live:** all 4 news feeds parse; a full paper tick on live data produced a correct briefing | Real thinking costs; the estimates above are back-of-envelope |
+| **Live:** the order-test endpoint exists and rejects unsigned calls in the format the bot handles | Signed calls: balances, placing orders, the shape of a real fill (needs your keys; use `--validate-orders`) |
+| Guardrails, including a prompt-injection attempt | Real slippage on Coins.ph's order book |
+| Request shape for the Claude API (model, strict tool, web search, fallbacks, effort, caching) | Whether the news sites mind automated reading over the long term |
+| Refusal, pause/resume and "forgot to decide" handling; API errors never kill the bot | |
+| Wake-ups, daily budget, thinking charged to life, death by overthinking | |
+| Ledger, stop-loss, take-profit, permanent death, restart persistence, malicious-feed rejection | |
+
+**Known gap: stops live in the bot, not on the exchange.** If the server is down, stop-losses don't fire. Coins.ph supports exchange-side `STOP_LOSS` and `TAKE_PROFIT` orders; moving stops there is the next safety upgrade.
 
 ## Honest expectations
 
@@ -167,7 +171,7 @@ mortalbot/
   runner.py       paper/live loops, retries, account reconciliation
   exchange/       paper broker, Coins.ph client, validate-only shadow broker
 deploy/           systemd unit
-tests/            86 tests
+tests/            88 tests
 ```
 
 ## Sources
