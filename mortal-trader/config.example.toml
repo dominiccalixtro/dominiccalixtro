@@ -1,0 +1,40 @@
+# MortalBot configuration. Copy to config.toml and edit.
+# API keys are NOT set here: export COINS_API_KEY and COINS_API_SECRET instead.
+
+name = "mortal-001"       # each life gets its own name; a dead name stays dead
+symbol = "BTCPHP"
+base_asset = "BTC"
+quote_asset = "PHP"
+interval = "1h"           # candle size the strategy reads
+history = 300             # candles per decision
+state_dir = "state"
+
+[life]
+budget_php = 5000         # its whole life
+death_floor_php = 0       # 0 = dies when it can no longer afford the smallest order.
+                          # Set e.g. 2500 for "dies after losing half".
+wounded_below = 0.75      # below 75% of life: WOUNDED, trades at wounded_size
+critical_below = 0.40     # below 40% of life: CRITICAL, trades at critical_size
+wounded_size = 0.5
+critical_size = 0.25
+
+[strategy]
+fast_ema = 12
+slow_ema = 26
+trend_ema = 100
+atr_period = 14
+
+[risk]
+risk_per_trade = 0.02     # a stopped-out trade costs about 2% of equity
+atr_stop_mult = 2.5
+trailing_stop = true
+max_position_fraction = 0.95
+max_consecutive_losses = 3
+rest_candles = 12
+
+[execution]
+fee_rate = 0.003          # ASSUMPTION: set this to your Coins.ph fee tier
+slippage_bps = 10         # 0.10% assumed spread/slippage per fill in paper and backtests
+poll_seconds = 30
+paper_min_notional_php = 100
+base_url = "https://api.pro.coins.ph"

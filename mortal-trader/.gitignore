@@ -1,0 +1,9 @@
+# the bot's ledger and obituaries (contain your trading history)
+state/
+# downloaded candles
+data/
+# your local config (keep config.example.toml in git)
+config.toml
+.env
+__pycache__/
+*.pyc
