@@ -54,6 +54,7 @@ class ClaudeTrader:
         self.tired_until = 0  # brain unavailable or out of budget: don't retry before this
         self._regimes: dict[str, Regime] = {}
         self._regimes_at = 0
+        self._asleep = False
 
     @property
     def state(self) -> BotState:
@@ -101,6 +102,12 @@ class ClaudeTrader:
                 side = "above" if r.up else "below"
                 events.append(f"{sym} turned {'UP' if r.up else 'DOWN'}: its daily close is {side} its "
                               f"{r.days}-day average")
+        for sym, stopped in list(s.stopped_at.items()):
+            r = regimes.get(sym)
+            if r and r.up and r.close_time > stopped:
+                del s.stopped_at[sym]  # a fresh close above the average: buying it back is allowed again
+                events.append(f"{sym} closed above its {r.days}-day average again after your stop-loss; "
+                              "it can be bought again")
         if a.trend_rule == "enforce":
             for sym, pos in list(s.positions.items()):
                 r = regimes.get(sym)
@@ -128,12 +135,30 @@ class ClaudeTrader:
             self.think(now, reason)
         self.body.save()
 
+    def hibernating(self, now: int) -> bool:
+        """Nothing to decide: it holds no coins and the trend rule forbids every buy. Thinking would be wasted money."""
+        if self.cfg.agent.trend_rule != "enforce" or self.state.positions:
+            return False
+        regimes = self.regimes(now)
+        return bool(regimes) and not any(r.up for r in regimes.values())
+
     def wake_reason(self, now: int) -> str | None:
         s, a = self.state, self.cfg.agent
         if now < self.tired_until:
             return None
+        if self.hibernating(now):
+            if not self._asleep:
+                self._asleep = True
+                log.info("%s hibernating: no coins held and every coin is in a downtrend; no thinking until "
+                         "one turns up", ts_str(now))
+            return None
+        if self._asleep:
+            self._asleep = False
+            if s.last_think_at:
+                return "; ".join(s.pending_wake) or "a coin's daily trend turned up while you were hibernating"
         if s.last_think_at == 0:
-            return "you were just born; this is your first look at the market"
+            born = "you were just born; this is your first look at the market"
+            return "; ".join([born] + s.pending_wake)
         if now - s.last_think_at < a.min_gap_minutes * MINUTE:
             return None
         if s.pending_wake:
@@ -191,6 +216,7 @@ class ClaudeTrader:
         else:
             s.thinking_paid += cost
         s.think_spent_today += cost
+        s.thoughts += 1
 
         decision = thought.decision or {}
         verdict = review(decision, self.body, self.cfg, now, regimes) if thought.decision else None

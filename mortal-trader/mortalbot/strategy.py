@@ -63,9 +63,15 @@ def regime(symbol: str, daily: Sequence[Candle], days: int, atr_period: int = 14
     if len(daily) < days + 1:
         return None
     closes = [c.close for c in daily]
+    prefix = [0.0]
+    for x in closes:
+        prefix.append(prefix[-1] + x)
+
+    def average(i: int) -> float:  # average of the `days` closes ending at i, in O(1)
+        return (prefix[i + 1] - prefix[i + 1 - days]) / days
 
     def above(i: int) -> bool:
-        return closes[i] > sum(closes[i - days + 1:i + 1]) / days
+        return closes[i] > average(i)
 
     up = above(len(closes) - 1)
     streak = 0
@@ -73,7 +79,7 @@ def regime(symbol: str, daily: Sequence[Candle], days: int, atr_period: int = 14
         if above(i) != up:
             break
         streak += 1
-    avg = sum(closes[-days:]) / days
+    avg = average(len(closes) - 1)
     a = atr(daily, atr_period)[-1] or 0.0
     chg = (closes[-1] / closes[-31] - 1) * 100 if len(closes) > 30 else 0.0
     return Regime(symbol, up, closes[-1], avg, days, daily[-1].close_time, streak, chg,

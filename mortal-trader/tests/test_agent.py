@@ -493,3 +493,53 @@ class AgentConfig(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Adaptation(unittest.TestCase):
+    """Behaviours found by running the simulator."""
+
+    def test_hibernates_when_there_is_nothing_to_decide(self):
+        t, brain, _ = trader(Thought(decision(), D("0.05")), cfg=agent_cfg("enforce"))
+        t.charts.daily["BTCPHP"] = t.charts.daily["ETHPHP"] = [100.0] * 60 + [90.0]
+        for h in range(0, 24 * 10, 6):  # ten days of ticks, all coins in downtrends, nothing held
+            t.step(PRICES, NOW + h * HOUR)
+        self.assertEqual(brain.briefings, [], "no thinking, no cost while hibernating")
+        self.assertEqual(t.state.thinking_paid, 0)
+        t.charts.daily["ETHPHP"] = [100.0] * 60 + [90.0, 104.0]
+        t._regimes_at = 0
+        t.step(PRICES, NOW + 241 * HOUR)
+        self.assertEqual(len(brain.briefings), 1, "a coin turning up wakes it")
+        self.assertIn("ETHPHP turned UP", brain.briefings[0])
+
+    def test_no_buying_back_into_a_crash_after_a_stop(self):
+        t, brain, broker = trader(Thought(decision(buy("BTCPHP", stop=5), minutes=10080), D("0.05")),
+                                  Thought(decision(buy("BTCPHP", stop=5), minutes=10080), D("0.05")),
+                                  cfg=agent_cfg("enforce"))
+        t.step(PRICES, NOW)
+        crash = {**PRICES, "BTCPHP": D("4700000")}
+        broker.mark_all(crash, NOW + HOUR)
+        t.step(crash, NOW + HOUR)  # stop fires; the daily trend still says "up"
+        t.step(crash, NOW + 2 * HOUR)  # woken by the stop; tries to buy back
+        self.assertNotIn("BTCPHP", t.state.positions)
+        self.assertIn("needs a fresh daily close", t.state.journal[-1]["blocked"])
+
+    def test_fresh_close_after_a_stop_reopens_and_wakes(self):
+        t, brain, broker = trader(Thought(decision(buy("BTCPHP", stop=5), minutes=10080), D("0.05")),
+                                  cfg=agent_cfg("enforce"))
+        t.step(PRICES, NOW)
+        crash = {**PRICES, "BTCPHP": D("4700000")}
+        broker.mark_all(crash, NOW + HOUR)
+        t.step(crash, NOW + HOUR)
+        self.assertIn("BTCPHP", t.state.stopped_at)
+        t.charts.end = NOW + 86_400_000  # the next daily candle closes, still above the average
+        t._regimes_at = 0
+        t.step(crash, NOW + 86_400_000 + HOUR)
+        self.assertNotIn("BTCPHP", t.state.stopped_at)
+        self.assertIn("can be bought again", brain.briefings[-1])
+
+    def test_thought_counter_outlives_the_journal(self):
+        t, _, _ = trader(cfg=agent_cfg())
+        t.state.journal = [{}] * 0
+        for i in range(3):
+            t.step(PRICES, NOW + i * 1500 * 60_000)
+        self.assertEqual(t.state.thoughts, 3)

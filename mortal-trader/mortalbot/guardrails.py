@@ -131,6 +131,11 @@ def review(decision: dict, body: Body, cfg: BotConfig, now: int, regimes: dict |
                        else "its daily trend is unknown")
                 out.notes.append(f"{tag}: {why}; the trend rule only allows buying in an uptrend; blocked")
                 continue
+            stopped = s.stopped_at.get(o.symbol)
+            if stopped and a.trend_rule != "off" and (r is None or r.close_time <= stopped):
+                out.notes.append(f"{tag}: stopped out at {local_time(stopped, a.utc_offset_hours)}; buying it back "
+                                 "needs a fresh daily close above its average first; blocked")
+                continue
             if s.rest_until > now:
                 out.notes.append(f"{tag}: resting after a losing streak until "
                                  f"{local_time(s.rest_until, a.utc_offset_hours)}; blocked")

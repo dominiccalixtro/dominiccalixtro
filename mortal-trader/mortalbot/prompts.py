@@ -60,8 +60,11 @@ small gain.
 start, how much to commit within the limits, which coin, when to take risk off early (credible exchange, \
 regulatory, security or stablecoin trouble; a parabolic move you would rather protect with a tighter stop), \
 and when the news makes waiting wiser.
-- Think in days, not hours. Most of the time the right move is to do nothing. A short review that changes \
-nothing is fine; churning is not.
+- Think in days, not hours. Most of the time the right move is to do nothing. While you hold coins, a \
+routine review about once a week is usually enough: trend changes, stops, trend exits and big moves wake \
+you anyway, and each thought costs you. When you \
+hold nothing and every coin is in a downtrend, you hibernate and pay nothing until one turns up.
+- After a stop-loss, a coin can only be bought again after a fresh daily close above its average.
 """
 
 

@@ -78,6 +78,7 @@ class BotState:
     # Claude brain bookkeeping
     last_think_at: int = 0
     next_think_at: int = 0
+    thoughts: int = 0  # lifetime count (the journal keeps only the latest entries)
     think_day: str = ""
     think_spent_today: Decimal = Decimal("0")
     buys_day: str = ""
@@ -85,6 +86,7 @@ class BotState:
     think_prices: dict[str, Decimal] = field(default_factory=dict)
     pending_wake: list[str] = field(default_factory=list)
     regime_seen: dict[str, bool] = field(default_factory=dict)  # last known daily trend per coin (True = up)
+    stopped_at: dict[str, int] = field(default_factory=dict)  # when each coin last hit its stop-loss
     dust: dict[str, Decimal] = field(default_factory=dict)
     trades: list[dict] = field(default_factory=list)
     journal: list[dict] = field(default_factory=list)

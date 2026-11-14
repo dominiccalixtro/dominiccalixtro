@@ -205,6 +205,7 @@ class Body:
                 continue
             if pos.stop_price is not None and p <= pos.stop_price:
                 if self.sell(sym, ts, f"stop-loss (stop {peso(pos.stop_price)})"):
+                    self.state.stopped_at[sym] = ts
                     events.append(f"stop-loss sold {sym} at about {peso(p)}")
             elif pos.take_profit is not None and p >= pos.take_profit:
                 if self.sell(sym, ts, f"take-profit (target {peso(pos.take_profit)})"):

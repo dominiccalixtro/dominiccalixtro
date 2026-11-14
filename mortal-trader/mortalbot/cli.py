@@ -126,6 +126,43 @@ def cmd_status(args, cfg) -> int:
     return 0
 
 
+def cmd_simulate(args, cfg) -> int:
+    import json
+
+    from .simulate import SCENARIOS, PlaybookBrain, export, history_market, simulate
+
+    markets = []
+    if args.history:
+        daily = {s: load_csv(f"{args.history}/{s}-1d.csv") for s in cfg.agent.universe}
+        markets.append(history_market(daily))
+    names = list(SCENARIOS) if args.scenario == "all" else [args.scenario] if args.scenario else []
+    markets += [SCENARIOS[n]() for n in names]
+    if not markets:
+        print("choose --scenario NAME|all and/or --history DIR", file=sys.stderr)
+        return 2
+    if args.brain == "claude":
+        print("Using real Claude: every thought is a billed API call. On --history, Claude may already know "
+              "what happened next, so only the synthetic scenarios are a fair test.", file=sys.stderr)
+    print(f"{'market':<16} {'days':>4} {'BTC':>7} {'bot':>8} {'worst drop':>10} {'trades':>6} {'won':>4} "
+          f"{'thoughts':>8} {'thinking':>9}  status")
+    out = []
+    for m in markets:
+        brain = ClaudeBrain(cfg) if args.brain == "claude" else PlaybookBrain(cfg, Decimal(args.cost_usd))
+        r = simulate(cfg, m, brain)
+        x = r.summary()
+        print(f"{m.name:<16} {x['days']:>4} {x['btc_change']:>+7.0%} {x['bot_change']:>+8.1%} {x['max_drop']:>10.1%} "
+              f"{x['trades']:>6} {x['wins']:>4} {x['thoughts']:>8} {peso(x['thinking']):>9}  "
+              f"{'alive' if x['alive'] else 'DEAD: ' + str(x['cause_of_death'])}")
+        out.append(export(r))
+    if args.json:
+        Path(args.json).write_text(json.dumps(out), encoding="utf-8")
+        print(f"\nwrote {args.json}")
+    if args.brain != "claude":
+        print("\nBrain: scripted stand-in that follows the playbook mechanically (no judgement, gullible to planted "
+              "news). --brain claude runs the real thing.")
+    return 0
+
+
 def cmd_fetch(args, cfg) -> int:
     client = _client(cfg, need_keys=False)
     symbol, interval = args.symbol or cfg.symbol, args.interval or cfg.interval
@@ -172,6 +209,13 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--mode", choices=["paper", "live"], default="paper")
     st.add_argument("--journal", type=int, default=3, metavar="N", help="show the last N thoughts (default 3)")
 
+    si = sub.add_parser("simulate", help="run the full bot through simulated or historical markets")
+    si.add_argument("--scenario", help="steady-bull, bull-then-crash, sideways-chop, long-bear, fake-news, or all")
+    si.add_argument("--history", metavar="DIR", help="replay real daily candles from DIR/<SYMBOL>-1d.csv")
+    si.add_argument("--brain", choices=["stand-in", "claude"], default="stand-in")
+    si.add_argument("--cost-usd", default="0.05", help="stand-in's simulated cost per thought (default ~Opus)")
+    si.add_argument("--json", help="write timelines and events to this file")
+
     fe = sub.add_parser("fetch", help="download Coins.ph candles to CSV for backtesting")
     fe.add_argument("--symbol")
     fe.add_argument("--interval")
@@ -196,6 +240,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_trade(args, cfg, args.cmd)
         if args.cmd == "status":
             return cmd_status(args, cfg)
+        if args.cmd == "simulate":
+            return cmd_simulate(args, cfg)
         return cmd_fetch(args, cfg)
     except ExchangeError as e:
         print(f"Coins.ph error: {e}", file=sys.stderr)
