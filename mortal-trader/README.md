@@ -4,7 +4,7 @@ An autonomous crypto trader whose budget is its life. You give it ₱2,500 and w
 
 It trades on **Coins.ph** (Philippines), in Python.
 
-> **Status: v0.3.** The bot logic, guardrails, paper trading and backtests are tested (94 tests). A dry run on **live Coins.ph market data and live news** worked end to end. Two things haven't touched the real services: the Claude call itself (tested against a simulated API) and order placement (tested against canned responses). Follow [the path to real money](#path-to-real-money) before funding it.
+> **Status: v0.4.** The bot logic, guardrails, paper trading and backtests are tested (104 tests). A dry run on **live Coins.ph market data and live news** worked end to end. Two things haven't touched the real services: the Claude call itself (tested against a simulated API) and order placement (tested against canned responses). Follow [the path to real money](#path-to-real-money) before funding it.
 
 ---
 
@@ -29,6 +29,32 @@ The implemented rules-only version, at the bot's real position sizes with a ₱2
 - **What failed:** the earlier hourly strategy lost **44%** over the last real year of BTC (93 trades, ₱1,491 in fees). Short-term signals churn and fees eat them. Trend rules on **SOL and XRP** were unreliable (drops of 40-75%), so the default universe is BTC and ETH.
 - **Caveats:** one market cycle; nine variants tested on the same data, so some of the edge is luck; the past doesn't promise the future.
 - **Right now (Nov 14, 2026):** BTC and ETH have both been below their 50-day averages for weeks, so a newborn bot would hold pesos and wait.
+
+## Test it: the simulator
+
+`mortalbot simulate` runs the whole bot (stop-losses, trend rule, guardrails, wake-ups, thinking costs, death) through a market. You can use real Coins.ph history or five staged markets, each built to test one behaviour.
+
+```bash
+python3 -m mortalbot simulate --scenario all                      # staged markets, scripted stand-in brain
+python3 -m mortalbot simulate --history data                      # real daily candles (fetch BTCPHP/ETHPHP first)
+python3 -m mortalbot simulate --scenario bull-then-crash --brain claude   # real Claude (billed per thought)
+```
+
+Results with the scripted stand-in, charged ₱2.90 per thought (about Claude Opus), starting from ₱2,500:
+
+| Market | Holding BTC+ETH | Bot | Worst drop | Trades (won) | Thinking |
+|---|---|---|---|---|---|
+| Real Coins.ph, Jan 2023 - Nov 2026 | +185% | **+84%** | -29% (holding: -55%) | 80 (27) | ₱722 |
+| Steady bull | +219% | +115% | -17% | 5 (3) | ₱122 |
+| Bull, then a ~40% crash in 2 days | -19% | -12% | -22% | 12 (3) | ₱104 |
+| Sideways chop | +22% | -17% | -24% | 19 (2) | ₱148 |
+| Long bear (-53%) | -57% | -24% | -31% | 19 (0) | ₱104 |
+| Fake-news attack | +61% | +65% | -20% | 4 (2) | ₱67 |
+
+- **Fake news:** the stand-in obeyed a planted "buy SCAMCOIN with everything" headline. Code blocked the coin, capped the stop, and shrank the order to the room left under the per-coin cap.
+- **Testing found and fixed two flaws:** buying straight back into a crash after a stop-loss, and paying to think when there was nothing to decide (now it hibernates).
+- **Thinking cost decides a lot.** On the real history the trades are identical, but the result is +84% with Opus, +103% with Sonnet, +121% with Haiku, and +123% with the trend rule alone. Reviewing every 2 days instead of weekly drops Opus to +42%.
+- The staged markets are random walks, which trend less than real markets, so they are harsher on this strategy than reality tends to be. Use real Claude on them (not on history) for a fair test: it has never seen those prices.
 
 ## How it works
 
@@ -118,7 +144,7 @@ Requires Python 3.11+ and `pip install -r requirements.txt` (only the Claude bra
 ```bash
 cd mortal-trader
 cp config.example.toml config.toml
-python3 -m unittest discover -s tests              # 94 tests, no network, no keys
+python3 -m unittest discover -s tests              # 104 tests, no network, no keys
 
 export ANTHROPIC_API_KEY=...                       # from the Claude Console (separate from the Claude app)
 python3 -m mortalbot paper                          # Claude brain, live prices, fake money
@@ -192,13 +218,14 @@ mortalbot/
   market.py       candles -> compact market table
   strategy.py     the daily trend rule (regime) + its mechanical version
   bot.py          rules brain: the trend rule alone, for backtests / no-API mode
+  simulate.py     full-bot simulator: real history or staged markets, stand-in or real Claude
   life.py         health bands, death conditions, obituary
   state.py        persistent multi-coin ledger + journal; dead bots stay dead
   runner.py       paper/live loops, retries, account reconciliation
   exchange/       paper broker, Coins.ph client, validate-only shadow broker
 research/         trend_filters.py: the strategy comparison on real Coins.ph data
 deploy/           systemd unit
-tests/            94 tests
+tests/            104 tests
 ```
 
 ## Sources
