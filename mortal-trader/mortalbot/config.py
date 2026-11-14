@@ -65,10 +65,52 @@ class ExecutionConfig:
     base_url: str = "https://api.pro.coins.ph"
 
 
+DEFAULT_FEEDS = [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cointelegraph.com/rss",
+    "https://decrypt.co/feed",
+    "https://bitpinas.com/feed/",
+]
+
+
+@dataclass
+class AgentConfig:
+    """The Claude brain: which model thinks, what it may trade, and the hard limits it trades inside."""
+
+    model: str = "claude-opus-5-5"
+    effort: str = "medium"  # low | medium | high | xhigh | max (more effort = better reasoning, more cost)
+    universe: list = field(default_factory=lambda: ["BTCPHP", "ETHPHP", "SOLPHP", "XRPPHP"])
+    # Guardrails. Claude decides inside these; code enforces them and Claude cannot change them.
+    max_positions: int = 3
+    max_position_pct: float = 0.5  # one coin may be at most this share of equity
+    max_buys_per_day: int = 4
+    min_stop_pct: float = 2.0  # every buy has a stop-loss between these distances
+    max_stop_pct: float = 15.0
+    cash_reserve_pct: float = 0.03
+    # When it thinks. Claude picks its next check inside these bounds.
+    min_check_minutes: int = 60
+    max_check_minutes: int = 1440
+    min_gap_minutes: int = 20  # even urgent wake-ups wait this long after the last thought
+    wake_on_move_pct: float = 5.0  # wake early if any coin moves this much since the last thought
+    # Metabolism: thinking costs real money, and it comes out of the bot's life.
+    daily_thinking_budget_php: Decimal = Decimal("25")
+    usd_php: Decimal = Decimal("58")  # ASSUMPTION: set to the current exchange rate
+    charge_thinking_to_life: bool = True
+    upkeep_php_per_day: Decimal = Decimal("0")  # e.g. your server's cost per day
+    # Senses.
+    web_search_max_uses: int = 2  # Claude's own web searches per thought; 0 disables
+    news_feeds: list = field(default_factory=lambda: list(DEFAULT_FEEDS))
+    news_max_items: int = 25
+    news_max_age_hours: int = 48
+    journal_in_context: int = 8
+    utc_offset_hours: int = 8  # Manila; used for "today" and for display
+
+
 @dataclass
 class BotConfig:
     name: str = "mortal-001"
-    symbol: str = "BTCPHP"
+    brain: str = "claude"  # "claude" (autonomous, news-aware) or "rules" (EMA crossover, no API needed)
+    symbol: str = "BTCPHP"  # the market the rules brain trades
     base_asset: str = "BTC"
     quote_asset: str = "PHP"
     interval: str = "1h"
@@ -78,6 +120,7 @@ class BotConfig:
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    agent: AgentConfig = field(default_factory=AgentConfig)
 
 
 def warmup_candles(s: StrategyConfig) -> int:
@@ -106,6 +149,9 @@ def _coerce(cls, data: dict, section: str):
                 value = float(value)
             elif isinstance(default, str):
                 value = str(value)
+            elif isinstance(default, list):
+                if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                    raise TypeError("expected a list of strings")
         except (TypeError, ValueError, ArithmeticError) as e:
             raise ConfigError(f"[{section}] {key}: {e}") from None
         kwargs[key] = value
@@ -118,7 +164,8 @@ def load_config(path: str | Path | None) -> BotConfig:
     else:
         with open(path, "rb") as fh:
             raw = tomllib.load(fh)
-        nested = {"life": LifeConfig, "strategy": StrategyConfig, "risk": RiskConfig, "execution": ExecutionConfig}
+        nested = {"life": LifeConfig, "strategy": StrategyConfig, "risk": RiskConfig, "execution": ExecutionConfig,
+                  "agent": AgentConfig}
         top = {k: v for k, v in raw.items() if k not in nested}
         if any(isinstance(v, dict) for v in top.values()):
             bad = [k for k, v in top.items() if isinstance(v, dict)]
@@ -172,5 +219,33 @@ def validate(cfg: BotConfig) -> None:
         errs.append("execution.poll_seconds must be >= 5 (respect the exchange's rate limits)")
     if not e.base_url.startswith("https://"):
         errs.append("execution.base_url must use https")
+    if cfg.brain not in ("claude", "rules"):
+        errs.append('brain must be "claude" or "rules"')
+    a = cfg.agent
+    if not a.universe or any(not re.fullmatch(r"[A-Z0-9]{2,15}", s) or not s.endswith(cfg.quote_asset)
+                             for s in a.universe):
+        errs.append(f"agent.universe: list symbols like \"BTC{cfg.quote_asset}\"")
+    if a.effort not in ("low", "medium", "high", "xhigh", "max"):
+        errs.append("agent.effort must be low, medium, high, xhigh or max")
+    if not (1 <= a.max_positions <= 10):
+        errs.append("agent.max_positions must be 1-10")
+    if not (0 < a.max_position_pct <= 1):
+        errs.append("agent.max_position_pct must be in (0, 1]")
+    if a.max_buys_per_day < 0:
+        errs.append("agent.max_buys_per_day must be >= 0")
+    if not (0.5 <= a.min_stop_pct <= a.max_stop_pct <= 50):
+        errs.append("agent: need 0.5 <= min_stop_pct <= max_stop_pct <= 50")
+    if not (0 <= a.cash_reserve_pct < 0.5):
+        errs.append("agent.cash_reserve_pct must be in [0, 0.5)")
+    if not (15 <= a.min_check_minutes <= a.max_check_minutes <= 10080):
+        errs.append("agent: need 15 <= min_check_minutes <= max_check_minutes <= 10080")
+    if not (5 <= a.min_gap_minutes <= a.min_check_minutes):
+        errs.append("agent.min_gap_minutes must be between 5 and min_check_minutes")
+    if a.daily_thinking_budget_php < 0 or a.usd_php <= 0 or a.upkeep_php_per_day < 0:
+        errs.append("agent: budgets and usd_php must be non-negative (usd_php > 0)")
+    if not (0 <= a.web_search_max_uses <= 10):
+        errs.append("agent.web_search_max_uses must be 0-10")
+    if any(not f.startswith("https://") for f in a.news_feeds):
+        errs.append("agent.news_feeds must be https URLs")
     if errs:
         raise ConfigError("invalid config:\n  - " + "\n  - ".join(errs))

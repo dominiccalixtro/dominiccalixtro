@@ -17,22 +17,31 @@ class PaperBroker:
     def __init__(self, fee_rate: Decimal, slippage_bps: Decimal):
         self.fee_rate = fee_rate
         self.slip = slippage_bps / Decimal("10000")
-        self.price: Decimal | None = None
+        self.price: Decimal | None = None  # default price (single-market use)
+        self.prices: dict[str, Decimal] = {}
         self.ts = 0
         self._ids = itertools.count(1)
 
-    def mark(self, price: Decimal, ts: int) -> None:
-        """Tell the simulator the current market price."""
-        self.price = price
+    def mark(self, price: Decimal, ts: int, symbol: str | None = None) -> None:
+        """Tell the simulator the current market price (of one symbol, or the default)."""
+        if symbol is None:
+            self.price = price
+        else:
+            self.prices[symbol] = price
         self.ts = ts
 
-    def _px(self) -> Decimal:
-        if self.price is None or self.price <= 0:
-            raise OrderRejected("paper broker has no market price yet")
-        return self.price
+    def mark_all(self, prices: dict[str, Decimal], ts: int) -> None:
+        for sym, p in prices.items():
+            self.mark(p, ts, sym)
+
+    def _px(self, symbol: str) -> Decimal:
+        p = self.prices.get(symbol, self.price)
+        if p is None or p <= 0:
+            raise OrderRejected(f"paper broker has no market price for {symbol} yet")
+        return p
 
     def market_buy(self, rules: SymbolRules, quote_amount: Decimal) -> Fill:
-        px = self._px() * (1 + self.slip)
+        px = self._px(rules.symbol) * (1 + self.slip)
         qty = rules.round_qty(quote_amount / (px * (1 + self.fee_rate)))
         gross = qty * px
         if qty < rules.min_qty or gross < rules.min_notional:
@@ -41,7 +50,7 @@ class PaperBroker:
         return Fill("BUY", qty, gross + fee, px, fee, f"paper-{next(self._ids)}", self.ts)
 
     def market_sell(self, rules: SymbolRules, base_qty: Decimal) -> Fill:
-        px = self._px() * (1 - self.slip)
+        px = self._px(rules.symbol) * (1 - self.slip)
         qty = rules.round_qty(base_qty)
         gross = qty * px
         if qty < rules.min_qty or gross < rules.min_notional:

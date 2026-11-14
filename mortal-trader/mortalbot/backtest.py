@@ -70,8 +70,9 @@ def run_backtest(candles: list[Candle], cfg: BotConfig) -> BacktestResult:
     for i, c in enumerate(candles):
         seen = i + 1
         tick(c.open, c.open_time)
-        stop = state.stop_price
-        if bot.alive and bot.in_position and stop is not None and to_dec(c.low) <= stop < to_dec(c.open):
+        pos = state.positions.get(cfg.symbol)
+        stop = pos.stop_price if pos else None
+        if bot.alive and stop is not None and to_dec(c.low) <= stop < to_dec(c.open):
             tick(float(stop), c.open_time)
         if bot.alive:
             tick(c.low, c.open_time)

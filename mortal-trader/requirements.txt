@@ -1,0 +1,2 @@
+# Only the Claude brain needs this. The rules brain, backtests and tests run on the standard library.
+anthropic>=2.8,<3

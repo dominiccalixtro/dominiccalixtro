@@ -11,7 +11,7 @@ from helpers import D, HOUR, small_cfg
 from mortalbot.exchange.coinsph import CoinsPhClient, ShadowBroker, parse_fill, parse_symbol_rules, sign
 from mortalbot.exchange.paper import PaperBroker
 from mortalbot.models import ExchangeError, OrderRejected
-from mortalbot.runner import LedgerMismatch, run_loop
+from mortalbot.runner import LedgerMismatch, run_agent, run_rules
 from mortalbot.state import StateStore
 
 SYMBOL_INFO = {
@@ -171,7 +171,7 @@ class Runner(unittest.TestCase):
             c, _ = client(self.routes())
             store = StateStore(d, cfg.name, "paper")
             paper = PaperBroker(cfg.execution.fee_rate, cfg.execution.slippage_bps)
-            bot = run_loop(cfg, "paper", c, paper, store, max_loops=3, sleep=lambda s: None, now_ms=lambda: self.NOW)
+            bot = run_rules(cfg, "paper", c, paper, store, max_loops=3, sleep=lambda s: None, now_ms=lambda: self.NOW)
             self.assertTrue(bot.alive)
             self.assertEqual(store.load().last_candle_close_time, self.NOW - 1)
 
@@ -180,7 +180,7 @@ class Runner(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             c, _ = client(self.routes(php_free="1000"))
             with self.assertRaises(LedgerMismatch):
-                run_loop(cfg, "live", c, c, StateStore(d, cfg.name, "live"), max_loops=1,
+                run_rules(cfg, "live", c, c, StateStore(d, cfg.name, "live"), max_loops=1,
                          sleep=lambda s: None, now_ms=lambda: self.NOW)
 
     def test_network_errors_do_not_kill(self):
@@ -191,10 +191,49 @@ class Runner(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             c, _ = client(routes)
             paper = PaperBroker(cfg.execution.fee_rate, cfg.execution.slippage_bps)
-            bot = run_loop(cfg, "paper", c, paper, StateStore(d, cfg.name, "paper"), max_loops=3,
+            bot = run_rules(cfg, "paper", c, paper, StateStore(d, cfg.name, "paper"), max_loops=3,
                            sleep=sleeps.append, now_ms=lambda: self.NOW)
             self.assertTrue(bot.alive)
             self.assertEqual(sleeps, [60, 120], "exponential backoff")
+
+    def test_agent_loop_end_to_end(self):
+        """Claude brain (faked) + Coins.ph (faked) + paper money: one full life cycle step."""
+        from mortalbot.brain import Thought
+
+        cfg = small_cfg()
+        cfg.agent.universe = ["BTCPHP", "ETHPHP", "DOGEPHP"]  # DOGEPHP does not exist on this fake exchange
+        eth = dict(SYMBOL_INFO, symbol="ETHPHP", baseAsset="ETH")
+        routes = self.routes()
+        routes[("GET", "/openapi/v1/exchangeInfo")] = lambda p: (
+            (200, {"symbols": [s for s in (SYMBOL_INFO, eth) if s["symbol"] == p["symbol"]]}))
+        routes[("GET", "/openapi/quote/v1/ticker/price")] = (200, [
+            {"symbol": "BTCPHP", "price": "5000000"}, {"symbol": "ETHPHP", "price": "200000"},
+            {"symbol": "XRPPHP", "price": "30"}])
+        routes[("GET", "/openapi/quote/v1/klines")] = (200, candle_rows(200, self.NOW))
+
+        class Brain:
+            def __init__(self):
+                self.seen = []
+
+            def think(self, text, symbols):
+                self.seen.append(symbols)
+                return Thought({"market_view": "calm", "next_check_minutes": 60, "lesson": "", "actions": [
+                    {"action": "BUY", "symbol": "ETHPHP", "pesos": 800, "sell_fraction": 1,
+                     "stop_loss_pct": 6, "take_profit_pct": 0, "reason": "test"}]}, Decimal("0.02"))
+
+        brain = Brain()
+        with tempfile.TemporaryDirectory() as d:
+            c, t = client(routes)
+            store = StateStore(d, cfg.name, "paper")
+            paper = PaperBroker(cfg.execution.fee_rate, cfg.execution.slippage_bps)
+            trader = run_agent(cfg, "paper", c, paper, store, brain, headlines=lambda now: [], max_loops=2,
+                               sleep=lambda s: None, now_ms=lambda: self.NOW)
+            self.assertTrue(trader.alive)
+            self.assertEqual(brain.seen, [["BTCPHP", "ETHPHP"]], "one thought; unknown markets dropped")
+            saved = store.load()
+            self.assertIn("ETHPHP", saved.positions)
+            self.assertEqual(saved.thinking_paid, D("1.16"))
+            self.assertFalse(any(c["path"] == "/openapi/v1/order" for c in t.calls), "paper never places orders")
 
 
 if __name__ == "__main__":

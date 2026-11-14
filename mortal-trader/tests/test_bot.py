@@ -19,11 +19,10 @@ def make_bot(cfg=None, store=None, cash="5000"):
 
 def open_position(bot, b, price=D("1000000"), stop=D("950000"), pesos=D("4000")):
     b.mark(price, 0)
-    fill = b.market_buy(bot.rules, pesos)
-    s = bot.state
-    s.cash -= fill.quote_qty
-    s.position_qty, s.position_cost = fill.base_qty, fill.quote_qty
-    s.entry_price, s.entry_time, s.stop_price = fill.avg_price, 0, stop
+    bot.body.mark({bot.symbol: price})
+    fill = bot.body.buy(bot.symbol, pesos, 0, stop_distance=price - stop)
+    assert fill is not None
+    return fill
 
 
 class StopLoss(unittest.TestCase):
@@ -81,6 +80,7 @@ class Resting(unittest.TestCase):
             b.mark(D("940000"), i + 1)
             bot.on_price(D("940000"), i + 1)
         self.assertEqual(bot.state.rest_candles_left, 5)
+        self.assertEqual(bot.state.rest_until, 2 + 5 * 3_600_000)
         bot.on_candle_close(candles_from_closes([100.0] * 20))
         self.assertEqual(bot.state.rest_candles_left, 4)
 
@@ -96,7 +96,7 @@ class Backtest(unittest.TestCase):
         r = run_backtest(synthetic(1500, regime="mixed", seed=11), small_cfg())
         s = r.state
         realised = sum(Decimal(t["pnl"]) for t in s.trades)
-        if s.position_qty == 0:
+        if not s.positions:
             self.assertEqual(s.cash, s.budget + realised)
         self.assertGreater(len(s.trades), 0)
 

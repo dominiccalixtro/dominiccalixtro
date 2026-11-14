@@ -1,4 +1,4 @@
-"""The bot's memory: its own ledger, saved to disk after every change.
+"""The bot's memory: its own ledger and journal, saved to disk after every change.
 
 The ledger, not the exchange balance, is the bot's life. If your Coins.ph
 account holds more than the bot's budget, the bot still only spends its own
@@ -9,12 +9,11 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from decimal import Decimal
 from pathlib import Path
 
-_DECIMALS = ("budget", "cash", "position_qty", "position_cost", "entry_price", "stop_price",
-             "peak_equity", "last_equity", "fees_paid", "dust_qty")
+STATE_VERSION = 2
 
 
 class BotIsDead(Exception):
@@ -28,18 +27,40 @@ class StateMismatch(Exception):
 
 
 @dataclass
+class Position:
+    symbol: str
+    qty: Decimal
+    cost: Decimal  # pesos paid, fees included
+    entry_price: Decimal
+    entry_time: int
+    stop_price: Decimal | None = None
+    take_profit: Decimal | None = None
+    thesis: str = ""  # why it was bought
+
+    def to_dict(self) -> dict:
+        return {k: (str(v) if isinstance(v, Decimal) else v) for k, v in asdict(self).items()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Position":
+        dec = {"qty", "cost", "entry_price", "stop_price", "take_profit"}
+        return cls(**{k: (Decimal(v) if k in dec and v is not None else v) for k, v in d.items()})
+
+
+_DECIMALS = ("budget", "cash", "peak_equity", "last_equity", "fees_paid", "thinking_paid", "upkeep_paid",
+             "think_spent_today")
+_DECIMAL_MAPS = ("last_prices", "think_prices", "dust")
+
+
+@dataclass
 class BotState:
     name: str
     mode: str
-    symbol: str
+    symbol: str  # identity: the rules brain's market, or "agent"
     budget: Decimal
     born_at: int
     cash: Decimal
-    position_qty: Decimal = Decimal("0")
-    position_cost: Decimal = Decimal("0")  # pesos paid for the open position, fees included
-    entry_price: Decimal | None = None
-    entry_time: int | None = None
-    stop_price: Decimal | None = None
+    positions: dict[str, Position] = field(default_factory=dict)
+    last_prices: dict[str, Decimal] = field(default_factory=dict)
     peak_equity: Decimal = Decimal("0")
     last_equity: Decimal = Decimal("0")
     health: str = "HEALTHY"
@@ -47,30 +68,57 @@ class BotState:
     died_at: int | None = None
     cause_of_death: str | None = None
     consecutive_losses: int = 0
-    rest_candles_left: int = 0
+    rest_candles_left: int = 0  # rules brain
+    rest_until: int = 0  # Claude brain (ms timestamp)
     last_candle_close_time: int = 0
     fees_paid: Decimal = Decimal("0")
-    dust_qty: Decimal = Decimal("0")
+    thinking_paid: Decimal = Decimal("0")
+    upkeep_paid: Decimal = Decimal("0")
+    upkeep_until: int = 0
+    # Claude brain bookkeeping
+    last_think_at: int = 0
+    next_think_at: int = 0
+    think_day: str = ""
+    think_spent_today: Decimal = Decimal("0")
+    buys_day: str = ""
+    buys_today: int = 0
+    think_prices: dict[str, Decimal] = field(default_factory=dict)
+    pending_wake: list[str] = field(default_factory=list)
+    dust: dict[str, Decimal] = field(default_factory=dict)
     trades: list[dict] = field(default_factory=list)
+    journal: list[dict] = field(default_factory=list)
+    version: int = STATE_VERSION
 
     @classmethod
     def newborn(cls, name: str, mode: str, symbol: str, budget: Decimal, now_ms: int) -> "BotState":
         return cls(name=name, mode=mode, symbol=symbol, budget=budget, born_at=now_ms, cash=budget,
-                   peak_equity=budget, last_equity=budget)
+                   peak_equity=budget, last_equity=budget, upkeep_until=now_ms)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        for k in _DECIMALS:
-            if d[k] is not None:
-                d[k] = str(d[k])
+        d = {}
+        for f in fields(self):
+            v = getattr(self, f.name)
+            if f.name == "positions":
+                v = {k: p.to_dict() for k, p in v.items()}
+            elif f.name in _DECIMAL_MAPS:
+                v = {k: str(x) for k, x in v.items()}
+            elif isinstance(v, Decimal):
+                v = str(v)
+            d[f.name] = v
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "BotState":
         d = dict(d)
+        if d.get("version", 1) != STATE_VERSION:
+            raise StateMismatch(f"state file is version {d.get('version', 1)}, this bot needs {STATE_VERSION}. "
+                                "Start a new life with a new name.")
         for k in _DECIMALS:
             if d.get(k) is not None:
                 d[k] = Decimal(d[k])
+        for k in _DECIMAL_MAPS:
+            d[k] = {s: Decimal(x) for s, x in d.get(k, {}).items()}
+        d["positions"] = {s: Position.from_dict(p) for s, p in d.get("positions", {}).items()}
         return cls(**d)
 
 
@@ -91,7 +139,7 @@ class StateStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".json.tmp")
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(state.to_dict(), fh, indent=2)
+            json.dump(state.to_dict(), fh, indent=1)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, self.path)
@@ -111,5 +159,6 @@ def awaken(store: StateStore, *, name: str, mode: str, symbol: str, budget: Deci
     if not state.alive:
         raise BotIsDead(state)
     if state.symbol != symbol:
-        raise StateMismatch(f"{name} trades {state.symbol}, but the config says {symbol}. Use a new name.")
+        raise StateMismatch(f"{name} was born as '{state.symbol}', but the config now says '{symbol}'. "
+                            "Use a new name for a new kind of life.")
     return state, False

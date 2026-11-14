@@ -16,7 +16,8 @@ from .exchange.coinsph import CoinsPhClient, ShadowBroker
 from .exchange.paper import PaperBroker
 from .life import obituary
 from .models import ExchangeError, peso, ts_str
-from .runner import LedgerMismatch, run_loop
+from .brain import ClaudeBrain
+from .runner import LedgerMismatch, run_agent, run_rules
 from .state import BotIsDead, StateMismatch, StateStore
 
 EXIT_DEAD = 3
@@ -76,7 +77,14 @@ def cmd_trade(args, cfg, mode: str) -> int:
     broker = client if mode == "live" else (ShadowBroker(client, paper) if validate else paper)
     store = StateStore(cfg.state_dir, cfg.name, mode)
     try:
-        bot = run_loop(cfg, mode, client, broker, store)
+        if cfg.brain == "claude":
+            if not os.environ.get("ANTHROPIC_API_KEY"):
+                logging.getLogger("mortalbot").warning(
+                    "ANTHROPIC_API_KEY is not set; the Claude brain will only work if another Anthropic "
+                    "credential (e.g. `ant auth login`) is configured")
+            bot = run_agent(cfg, mode, client, broker, store, ClaudeBrain(cfg))
+        else:
+            bot = run_rules(cfg, mode, client, broker, store)
     except BotIsDead as e:
         print(f"{e}\n")
         print(obituary(e.state))
@@ -103,10 +111,18 @@ def cmd_status(args, cfg) -> int:
     print(f"  health   {s.health}, equity {peso(s.last_equity)} of {peso(s.budget)} "
           f"({float(s.last_equity / s.budget):.1%}), peak {peso(s.peak_equity)}")
     print(f"  cash     {peso(s.cash)}")
-    if s.position_qty > 0:
-        print(f"  holding  {s.position_qty} at {peso(s.entry_price)}, stop {peso(s.stop_price)}")
-    print(f"  trades   {len(s.trades)}, fees {peso(s.fees_paid)}"
-          + (f", resting {s.rest_candles_left} candles" if s.rest_candles_left else ""))
+    for sym, p in s.positions.items():
+        stop = peso(p.stop_price) if p.stop_price else "-"
+        print(f"  holding  {sym} {p.qty} at {peso(p.entry_price)}, stop {stop}"
+              + (f", target {peso(p.take_profit)}" if p.take_profit else ""))
+    print(f"  spent    fees {peso(s.fees_paid)}, thinking {peso(s.thinking_paid)}, upkeep {peso(s.upkeep_paid)}; "
+          f"{len(s.trades)} trades")
+    for j in s.journal[-args.journal:] if args.journal else []:
+        print(f"\n  [{ts_str(j['t'])}, {peso(Decimal(j['cost']))}] woke: {j['why']}")
+        print(f"    view: {j['view']}")
+        print(f"    did:  {j['did'] or 'nothing'}" + (f"\n    guardrails: {j['blocked']}" if j['blocked'] else ""))
+        if j.get("lesson"):
+            print(f"    lesson: {j['lesson']}")
     return 0
 
 
@@ -154,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     st = sub.add_parser("status", help="show the bot's vital signs")
     st.add_argument("--mode", choices=["paper", "live"], default="paper")
+    st.add_argument("--journal", type=int, default=3, metavar="N", help="show the last N thoughts (default 3)")
 
     fe = sub.add_parser("fetch", help="download Coins.ph candles to CSV for backtesting")
     fe.add_argument("--symbol")

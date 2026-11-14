@@ -107,9 +107,15 @@ def obituary(state) -> str:
         f"left {peso(state.cash)}",
         f"  Trades:  {len(trades)} ({wins} won, {len(trades) - wins} lost), fees paid {peso(state.fees_paid)}",
     ]
+    if state.thinking_paid or state.upkeep_paid:
+        lines.append(f"  Upkeep:  thinking {peso(state.thinking_paid)}, server {peso(state.upkeep_paid)}")
     if pnls:
         lines.append(f"  Best:    {peso(max(pnls))}   Worst: {peso(min(pnls))}")
-    if state.dust_qty > 0:
-        lines.append(f"  Dust:    {state.dust_qty} {state.symbol} too small to sell")
+    lessons = [j["lesson"] for j in state.journal if j.get("lesson")]
+    if lessons:
+        lines.append(f"  Last lesson: {lessons[-1][:200]}")
+    for sym, qty in state.dust.items():
+        if qty > 0:
+            lines.append(f"  Dust:    {qty} {sym} too small to sell")
     lines.append("+--------------------------------------------------+")
     return "\n".join(lines)

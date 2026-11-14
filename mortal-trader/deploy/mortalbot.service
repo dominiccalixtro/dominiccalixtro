@@ -1,0 +1,34 @@
+# systemd unit: keeps the bot alive 24/7 on a Linux server and restarts it after crashes or reboots.
+#
+#   sudo cp deploy/mortalbot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now mortalbot
+#   journalctl -u mortalbot -f        # watch it think
+#
+# Put secrets in /etc/mortalbot.env (chmod 600, owned by root):
+#   COINS_API_KEY=...
+#   COINS_API_SECRET=...
+#   ANTHROPIC_API_KEY=...
+
+[Unit]
+Description=MortalBot autonomous trader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mortalbot
+WorkingDirectory=/opt/mortal-trader
+EnvironmentFile=/etc/mortalbot.env
+# Start with `paper`. Switch to `live --confirm-real-money` only after the checklist in README.md.
+ExecStart=/opt/mortal-trader/.venv/bin/python -m mortalbot paper
+Restart=on-failure
+RestartSec=30
+# Exit code 3 means the bot died. Do not resurrect it.
+RestartPreventExitStatus=2 3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/mortal-trader/state
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

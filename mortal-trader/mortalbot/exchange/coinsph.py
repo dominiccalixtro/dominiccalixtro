@@ -145,6 +145,19 @@ class CoinsPhClient:
             data = next(d for d in data if d.get("symbol") == symbol)
         return Decimal(str(data["price"]))
 
+    def ticker_prices(self, symbols) -> dict[str, Decimal]:
+        """Prices for several markets: one call for all tickers, or one call each if that fails."""
+        wanted = set(symbols)
+        try:
+            data = self._request("GET", "/openapi/quote/v1/ticker/price")
+            if isinstance(data, list):
+                found = {d["symbol"]: Decimal(str(d["price"])) for d in data if d.get("symbol") in wanted}
+                if found.keys() == wanted:
+                    return found
+        except (ExchangeError, KeyError):
+            pass
+        return {s: self.ticker_price(s) for s in sorted(wanted)}
+
     # ---- private: account and orders ------------------------------------
 
     def balances(self) -> dict[str, tuple[Decimal, Decimal]]:
@@ -223,8 +236,11 @@ class ShadowBroker:
         self.client = client
         self.paper = paper
 
-    def mark(self, price: Decimal, ts: int) -> None:
-        self.paper.mark(price, ts)
+    def mark(self, price: Decimal, ts: int, symbol: str | None = None) -> None:
+        self.paper.mark(price, ts, symbol)
+
+    def mark_all(self, prices: dict[str, Decimal], ts: int) -> None:
+        self.paper.mark_all(prices, ts)
 
     def market_buy(self, rules: SymbolRules, quote_amount: Decimal) -> Fill:
         self._validate(self.client.buy_params(rules, quote_amount))
