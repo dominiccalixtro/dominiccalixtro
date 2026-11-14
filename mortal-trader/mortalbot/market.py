@@ -5,11 +5,15 @@ Code does the arithmetic (changes, trend, volatility); Claude does the judgement
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from .indicators import atr, ema
 from .models import Candle
+
+if TYPE_CHECKING:
+    from .strategy import Regime
 
 
 @dataclass(frozen=True)
@@ -50,10 +54,18 @@ def snapshot(symbol: str, candles: Sequence[Candle]) -> CoinSnapshot | None:
                         a / p * 100 if p else 0.0, max(c.high for c in day), min(c.low for c in day))
 
 
-def render(snaps: Sequence[CoinSnapshot]) -> str:
-    rows = ["symbol   | price (PHP)      | 1h     | 24h    | 7d     | trend | hourly move | 24h range"]
+def render(snaps: Sequence[CoinSnapshot], regimes: Mapping[str, "Regime"] | None = None) -> str:
+    regimes = regimes or {}
+    rows = ["symbol   | price (PHP)      | 1h     | 24h    | 7d     | 30d    | daily trend (vs avg)          "
+            "| typical daily move | 24h range"]
     for s in snaps:
+        r = regimes.get(s.symbol)
+        if r:
+            trend = f"{'UP' if r.up else 'DOWN':<4} {r.streak:>3}d ({r.distance_pct:+5.1f}% vs {r.days}d)"
+            month, daily = f"{r.chg_30d:+5.1f}%", f"{r.atr_pct:5.2f}%"
+        else:
+            trend, month, daily = f"hourly {s.trend}", "  n/a ", "  n/a"
         rows.append(f"{s.symbol:<8} | {s.price:>16,.2f} | {s.chg_1h:+5.1f}% | {s.chg_24h:+5.1f}% | "
-                    f"{s.chg_7d:+5.1f}% | {s.trend:<5} | {s.atr_pct:5.2f}%      | "
+                    f"{s.chg_7d:+5.1f}% | {month} | {trend:<29} | {daily:<18} | "
                     f"{s.low_24h:,.2f} - {s.high_24h:,.2f}")
     return "\n".join(rows)

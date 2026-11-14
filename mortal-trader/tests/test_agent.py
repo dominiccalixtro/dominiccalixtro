@@ -1,5 +1,6 @@
 """The Claude brain, its guardrails and its senses (no network, no API key, no real Claude)."""
 
+import dataclasses
 import importlib.util
 import json
 import tempfile
@@ -24,10 +25,17 @@ NOW = 1_767_225_600_000  # 2026-01-01 00:00 UTC = 08:00 Manila
 PRICES = {"BTCPHP": D("5000000"), "ETHPHP": D("200000")}
 
 
-def agent_cfg():
+def agent_cfg(trend_rule="off"):
+    """Limits pinned so the arithmetic in these tests stays readable."""
     cfg = small_cfg()
-    cfg.agent.universe = ["BTCPHP", "ETHPHP"]
-    cfg.agent.web_search_max_uses = 2
+    a = cfg.agent
+    a.universe = ["BTCPHP", "ETHPHP"]
+    a.web_search_max_uses = 2
+    a.trend_rule = trend_rule
+    a.max_positions, a.max_position_pct, a.max_buys_per_day = 3, 0.5, 4
+    a.min_stop_pct, a.max_stop_pct = 2.0, 15.0
+    a.min_check_minutes, a.max_check_minutes, a.wake_on_move_pct = 60, 1440, 5.0
+    a.daily_thinking_budget_php = D("25")
     return cfg
 
 
@@ -255,11 +263,29 @@ class FakeBrain:
         return t
 
 
+class Charts:
+    """Fake exchange charts: rising hourly candles; daily closes settable per coin."""
+
+    def __init__(self):
+        self.daily = {}
+        self.end = NOW  # the latest daily candle closes just before this
+
+    def __call__(self, sym, interval, limit):
+        if interval == "1d":
+            closes = self.daily.get(sym, [100.0] * 60 + [110.0])
+            day = 86_400_000
+            start = self.end - len(closes) * day
+            return [dataclasses.replace(c, open_time=start + i * day, close_time=start + (i + 1) * day - 1)
+                    for i, c in enumerate(candles_from_closes(closes))]
+        return candles_from_closes([5_000_000.0 * (1 + i / 1000) for i in range(200)])
+
+
 def trader(*thoughts, cfg=None, cash="5000", store=None):
     cfg, body, broker = make_body(cfg, cash, store)
     brain = FakeBrain(*thoughts)
-    closes = [5_000_000.0 * (1 + i / 1000) for i in range(200)]
-    t = ClaudeTrader(cfg, body, brain, klines=lambda s: candles_from_closes(closes), headlines=lambda now: [])
+    charts = Charts()
+    t = ClaudeTrader(cfg, body, brain, klines=charts, headlines=lambda now: [])
+    t.charts = charts
     return t, brain, broker
 
 
@@ -348,6 +374,46 @@ class Trader(unittest.TestCase):
             again = store.load()
             self.assertIn("BTCPHP", again.positions)
             self.assertEqual(again.journal[-1]["lesson"], "x")
+
+
+class TrendRule(unittest.TestCase):
+    def test_buys_blocked_in_downtrend_allowed_in_uptrend(self):
+        t, brain, _ = trader(Thought(decision(buy("BTCPHP"), buy("ETHPHP", 500)), D("0.05")),
+                             cfg=agent_cfg("enforce"))
+        t.charts.daily["BTCPHP"] = [100.0] * 60 + [90.0]  # below its average
+        t.step(PRICES, NOW)
+        self.assertEqual(sorted(t.state.positions), ["ETHPHP"])
+        self.assertIn("only allows buying in an uptrend", t.state.journal[-1]["blocked"])
+        self.assertIn("DOWN", brain.briefings[0])
+
+    def test_advise_mode_does_not_block(self):
+        t, _, _ = trader(Thought(decision(buy("BTCPHP")), D("0.05")), cfg=agent_cfg("advise"))
+        t.charts.daily["BTCPHP"] = [100.0] * 60 + [90.0]
+        t.step(PRICES, NOW)
+        self.assertIn("BTCPHP", t.state.positions)
+
+    def test_trend_exit_sells_after_a_close_below_average(self):
+        t, brain, _ = trader(Thought(decision(buy("BTCPHP"), minutes=1440), D("0.05")), cfg=agent_cfg("enforce"))
+        t.step(PRICES, NOW)
+        self.assertIn("BTCPHP", t.state.positions)
+        later = NOW + 86_400_000
+        t.charts.end = later  # a new daily candle has closed since the purchase...
+        t.charts.daily["BTCPHP"] = [100.0] * 60 + [110.0, 95.0]  # ...below the average
+        t._regimes_at = 0  # the 15-minute regime cache would refresh by now
+        t.step(PRICES, later)
+        self.assertNotIn("BTCPHP", t.state.positions)
+        self.assertIn("trend exit", t.state.trades[-1]["reason"])
+        self.assertIn("the trend rule sold BTCPHP", brain.briefings[-1])
+
+    def test_turning_up_wakes_the_brain(self):
+        t, brain, _ = trader(Thought(decision(minutes=10080), D("0.05")), cfg=agent_cfg("enforce"))
+        t.charts.daily["ETHPHP"] = [100.0] * 60 + [95.0]
+        t.step(PRICES, NOW)
+        t.charts.daily["ETHPHP"] = [100.0] * 60 + [95.0, 104.0]
+        t._regimes_at = 0
+        t.step(PRICES, NOW + 30 * 60_000)
+        self.assertEqual(len(brain.briefings), 2)
+        self.assertIn("ETHPHP turned UP", brain.briefings[1])
 
 
 # ---------------------------------------------------------------------------- senses and prompt

@@ -1,72 +1,96 @@
 # MortalBot
 
-An autonomous crypto trader whose budget is its life. You give it ₱5,000 and walk away. **Claude decides everything**: what to buy, when, how much, and when to sell. It reads market data and the news, and keeps a journal to learn from its own mistakes. Its thinking costs money, and that comes out of its life too. When the money runs out, it **dies**: it sells what it holds, writes its obituary, and never trades again.
+An autonomous crypto trader whose budget is its life. You give it ₱2,500 and walk away. **Claude makes the trading decisions**: which coin, when, how much, and when to take risk off. It reads market data and the news, and keeps a journal to learn from its own mistakes. Its thinking costs money, and that comes out of its life too. When the money runs out, it **dies**: it sells what it holds, writes its obituary, and never trades again.
 
 It trades on **Coins.ph** (Philippines), in Python.
 
-> **Status: v0.2.** The bot logic, guardrails, paper trading and backtests are tested (88 tests). A dry run on **live Coins.ph market data and live news** worked end to end. Two things haven't touched the real services: the Claude call itself (tested against a simulated API) and order placement (tested against canned responses). Follow [the path to real money](#path-to-real-money) before funding it.
+> **Status: v0.3.** The bot logic, guardrails, paper trading and backtests are tested (94 tests). A dry run on **live Coins.ph market data and live news** worked end to end. Two things haven't touched the real services: the Claude call itself (tested against a simulated API) and order placement (tested against canned responses). Follow [the path to real money](#path-to-real-money) before funding it.
 
 ---
+
+## The strategy: ride daily uptrends, sit out downtrends
+
+**The rule (enforced by code):** a coin may only be held while its **daily close is above its 50-day average**. Below that, the bot holds pesos. A held coin is sold automatically after a daily close below the average. Spot markets can't short, so in a downtrend "pesos" *is* the position.
+
+**Claude's job is everything inside that rule:** whether a fresh uptrend is worth joining now or is a likely false start, how much to commit, BTC or ETH, when to take risk off early (exchange, regulatory, security or stablecoin trouble; protecting a parabolic gain with a tighter stop), and when the news makes waiting wiser. It thinks in days, not hours.
+
+**Why this rule.** Tested on 4 years of real Coins.ph daily candles (Oct 2022 - Nov 2026), with 0.4% fees plus slippage per trade ([`research/trend_filters.py`](research/trend_filters.py)):
+
+| | Return | Worst drop | Worst 1-year window |
+|---|---|---|---|
+| BTC buy & hold | +181% | -50% | -41% |
+| **BTC trend rule** | **+201%** | **-26%** | **-15%** |
+| ETH buy & hold | +19% | -65% | -47% |
+| **ETH trend rule** | **+131%** | **-34%** | **-2%** |
+
+The implemented rules-only version, at the bot's real position sizes with a ₱2,500 life, made +154% on BTC (worst drop -13%) and +59% on ETH (worst drop -20%).
+
+- **Expect to lose most trades.** About 1 trade in 4 won, but winners averaged ~+25% and losers ~-3%. Many small losses buy a few big trends. Both Claude and you need to be comfortable with that.
+- **What failed:** the earlier hourly strategy lost **44%** over the last real year of BTC (93 trades, ₱1,491 in fees). Short-term signals churn and fees eat them. Trend rules on **SOL and XRP** were unreliable (drops of 40-75%), so the default universe is BTC and ETH.
+- **Caveats:** one market cycle; nine variants tested on the same data, so some of the edge is luck; the past doesn't promise the future.
+- **Right now (Nov 14, 2026):** BTC and ETH have both been below their 50-day averages for weeks, so a newborn bot would hold pesos and wait.
 
 ## How it works
 
 ```
-every 30 seconds (free, no AI)              when it matters (costs money)
-------------------------------              -----------------------------
-prices from Coins.ph                        Claude reads: vitals, positions, market table,
-stop-loss / take-profit fire                journal + lessons, ~25 news headlines,
-upkeep charged, vital signs checked         and may run 2 web searches
-death if equity is gone                            |
-wake the brain if:                          decision: BUY / SELL / ADJUST_STOP / hold
-  - its chosen check time arrived                  |
-  - a coin moved 5%+                        guardrails (code) shrink or block orders
-  - a stop or target just fired                    |
-                                            body executes; journal entry; Claude picks
-                                            when to think next (1h-24h)
+every 30 seconds (free, no AI)              on events (costs money)
+------------------------------              -----------------------
+prices from Coins.ph                        Claude reads: vitals, positions, market table with
+stop-loss / take-profit fire                daily trends, journal + lessons, ~25 news headlines,
+daily trend checked; trend exits fire       and may run 2 web searches
+upkeep charged, vital signs, death                 |
+wake the brain when:                        decision: BUY / SELL / ADJUST_STOP / hold
+  - a coin's daily trend turns up or down          |
+  - the trend rule or a stop sold something guardrails (code) shrink or block orders
+  - a coin moved 8%+                               |
+  - its chosen review time arrived (4h-7d)  body executes; journal entry
 ```
 
-**Claude proposes, code disposes.** Claude has full freedom *inside* hard limits that only code enforces and Claude cannot change:
+**Claude proposes, code disposes.** Claude has freedom *inside* hard limits that only code enforces and Claude cannot change:
 
 | Guardrail | Default | Why |
 |---|---|---|
-| Tradable coins | BTC, ETH, SOL, XRP (PHP pairs) | A headline saying "buy SCAMCOIN" can't be obeyed |
-| Mandatory stop-loss | 2-15% below entry | No position can bleed unattended |
-| Risk per trade | a stop-out costs ≤ 2% of equity | One bad call can't kill it |
-| Per coin / positions | ≤ 50% of equity per coin, ≤ 3 coins | No all-in bets |
-| Buys per day | 4 | Overtrading is just fees |
+| Trend rule | buy only in a daily uptrend; auto-sell below it | The one rule that halved worst drops in the data |
+| Tradable coins | BTC, ETH (PHP pairs) | A headline saying "buy SCAMCOIN" can't be obeyed |
+| Mandatory disaster stop | 5-15% below entry | Protection between daily closes, set wide enough to sit outside normal daily swings |
+| Risk per trade | a stop-out costs ≤ 4% of equity | One bad call can't kill it |
+| Per coin / positions | ≤ 45% of equity per coin, ≤ 2 coins | No all-in bets |
+| Buys per day | 2 | Overtrading is just fees |
 | Stops | can tighten, never loosen | It can't talk itself out of a stop |
-| Losing streak | 3 losses → 12 hours of rest | Cools off tilt |
 | Withdrawals | impossible | The API key has no withdrawal permission |
 
-When a guardrail changes an order, the next briefing tells Claude why, so it learns the rules.
+When a guardrail changes an order, the next briefing tells Claude why, so it learns the rules. `agent.trend_rule = "advise"` makes the trend rule advice instead of law, and `"off"` removes it.
 
-**Prompt injection.** News and web pages are untrusted text, and a crafted headline could try to steer the model. The prompt tells Claude to treat news as data, but the real defence is the guardrails above: whatever the model is persuaded to *say*, the code won't trade outside those limits. A test covers exactly this attack (`test_prompt_injection_cannot_escape_the_universe`).
+**Prompt injection.** News and web pages are untrusted text, and a crafted headline could try to steer the model. The prompt tells Claude to treat news as data, but the real defence is the guardrails: whatever the model is persuaded to *say*, the code won't trade outside those limits. A test covers exactly this attack (`test_prompt_injection_cannot_escape_the_universe`).
 
 ## Its life
 
-| Health | Equity vs. ₱5,000 | Effect |
+| Health | Life left (equity above the death floor) | Effect |
 |---|---|---|
 | THRIVING / HEALTHY | ≥ 75% | normal risk |
 | WOUNDED | ≥ 40% | half risk |
 | CRITICAL | < 40% | quarter risk |
-| **DEAD** | ≤ death floor, or can't afford the smallest order | sells everything, stops forever |
+| **DEAD** | ≤ death floor, or can't afford the ₱50 minimum order | sells everything, stops forever |
 
+- **₱2,500 is a hard cap.** Fund the Coins.ph account with exactly ₱2,500, and it can't lose more than that. The alternative is `budget_php = 5000` with `death_floor_php = 2500` ("start with ₱5,000, die after losing half"). That gives the same maximum loss in theory, but a fast crash could overshoot the floor.
 - **Equity** = pesos plus coins at what they'd sell for right now, after fees.
-- **It pays for its own thinking.** Each Claude call is priced from the API's token counts, converted at `usd_php`, and deducted from its pesos. The actual API bill goes to your Anthropic account. The bot books it against its own life, so **trading losses + thinking together never exceed ₱5,000**. Pesos it "spent" on thinking stay in your Coins.ph account to reimburse you.
-- **Daily thinking budget** (default ₱25). Once it's spent, the brain sleeps until midnight Manila time. Stop-losses keep working.
+- **It pays for its own thinking.** Each Claude call is priced from the API's token counts, converted at `usd_php`, and deducted from its pesos. The actual API bill goes to your Anthropic account. The bot books it against its own life, so **trading losses + thinking together never exceed ₱2,500**. Pesos it "spent" on thinking stay in your Coins.ph account to reimburse you.
+- **Daily thinking budget** (default ₱6). Once it's spent, the brain sleeps until midnight Manila time. Stops and trend exits keep working.
 - **Death is permanent.** A dead name never trades again; a new life needs a new `name`.
 
 ## What thinking costs
 
 Every thought sends about 2,500 tokens of briefing plus prompt. Output (Claude's reasoning plus its decision) varies with `effort`. These are **estimates**; the bot logs the real cost of every thought and you can see it in `status`.
 
-| Model (`agent.model`) | Price per M tokens (in / out) | Est. per thought | Thoughts per ₱25 day |
+| Model (`agent.model`) | Price per M tokens (in / out) | Est. per thought | Est. per month (10-30 thoughts) |
 |---|---|---|---|
-| `claude-opus-5-5` (default) | $4 / $20 | ₱2-4, up to ~₱12 with 2 web searches | ~3-10 |
-| `claude-sonnet-5-5` | $2 / $10 | ₱1-2, up to ~₱7 with searches | ~5-20 |
-| `claude-haiku-5-5` | $0.10 / $0.50 | under ₱0.20, ~₱1.5 with searches | 15-100+ |
+| `claude-opus-5-5` (default) | $4 / $20 | ₱2-4, up to ~₱12 with 2 web searches | ₱30-120 |
+| `claude-sonnet-5-5` | $2 / $10 | ₱1-2, up to ~₱7 with searches | ₱15-60 |
+| `claude-haiku-5-5` | $0.10 / $0.50 | under ₱0.20, ~₱1.5 with searches | under ₱15 |
 
-At the default cap, thinking can cost up to **₱750/month, 15% of its life**. That's likely more than a ₱5,000 account can earn. Cheaper models or fewer searches (`web_search_max_uses = 0`) stretch its life; Opus reasons best. Your call, and you can change it in config at any time.
+How many thoughts it has depends on events (a trend turning, a stop, an 8% move) and on how often Claude chooses to review. The ₱6 daily cap means at most ₱180 a month.
+
+**The economics:** in the data above, the trend rule at the bot's position sizes averaged roughly 1-2% a month over 2022-2026, about ₱25-50 on ₱2,500. Opus's thinking costs about the same or more. So with Opus, Claude has to *add* value (avoid false starts, dodge bad news) just to pay for itself. Sonnet halves the cost, and Haiku makes it nearly free but reasons less well. Your call: it's one line in the config.
 
 Server-side fallback is on (`fallbacks="default"`): if the model declines a request, the API retries it on its default fallback model.
 
@@ -94,18 +118,18 @@ Requires Python 3.11+ and `pip install -r requirements.txt` (only the Claude bra
 ```bash
 cd mortal-trader
 cp config.example.toml config.toml
-python3 -m unittest discover -s tests              # 88 tests, no network, no keys
+python3 -m unittest discover -s tests              # 94 tests, no network, no keys
 
 export ANTHROPIC_API_KEY=...                       # from the Claude Console (separate from the Claude app)
 python3 -m mortalbot paper                          # Claude brain, live prices, fake money
 python3 -m mortalbot status --journal 5             # vital signs + its last 5 thoughts
 ```
 
-The rules brain (`brain = "rules"`) needs no API key, and it's what `backtest` uses. An LLM can't be honestly backtested: it may already know how history played out.
+The rules brain (`brain = "rules"`) trades the trend rule alone, needs no API key, and is what `backtest` uses. An LLM can't be honestly backtested: it may already know how history played out.
 
 ```bash
-python3 -m mortalbot backtest --synthetic mixed
-python3 -m mortalbot fetch --limit 3000 && python3 -m mortalbot backtest --csv data/BTCPHP-1h.csv
+python3 -m mortalbot fetch --interval 1d --limit 4000 && python3 -m mortalbot backtest --csv data/BTCPHP-1d.csv
+python3 research/trend_filters.py data              # the strategy comparison above (fetch all 4 coins first)
 ```
 
 Live, with Coins.ph keys in the environment:
@@ -147,8 +171,9 @@ It has to run somewhere that never sleeps: your phone can't host it, and a sleep
 
 ## Honest expectations
 
-- **There is no evidence that an LLM reading headlines beats the market.** News is usually priced in within minutes, and this bot thinks in hours. Treat it as an experiment with a hard ₱5,000 cap, not an income source.
-- **Fees and thinking are a constant drain.** A round trip costs about 0.8%, and thinking up to ~₱25/day. The bot has to beat both just to stay alive.
+- **The trend rule is the evidence-backed part; Claude's judgement on top is the experiment.** There is no evidence that an LLM reading headlines beats the market. News is usually priced in within minutes, and this bot thinks in days. Treat it as an experiment with a hard ₱2,500 cap, not an income source.
+- **Expect long stretches of doing nothing,** and losing streaks of small trades. Both are the strategy working, not failing.
+- **Fees and thinking are a constant drain.** A round trip costs about 0.8%, and thinking ₱1-4 a day with Opus. The bot has to beat both just to stay alive.
 - The guardrails make blowing up unlikely, not impossible: a fast crash can gap through a stop.
 - Taxes on crypto gains are your responsibility. Not financial advice.
 
@@ -165,13 +190,15 @@ mortalbot/
   body.py         ledger, execution, stop/target reflexes, metabolism, death (shared by both brains)
   news.py         RSS/Atom headlines, sanitised, untrusted
   market.py       candles -> compact market table
-  bot.py          rules brain (EMA crossover) for backtests / no-API mode
+  strategy.py     the daily trend rule (regime) + its mechanical version
+  bot.py          rules brain: the trend rule alone, for backtests / no-API mode
   life.py         health bands, death conditions, obituary
   state.py        persistent multi-coin ledger + journal; dead bots stay dead
   runner.py       paper/live loops, retries, account reconciliation
   exchange/       paper broker, Coins.ph client, validate-only shadow broker
+research/         trend_filters.py: the strategy comparison on real Coins.ph data
 deploy/           systemd unit
-tests/            88 tests
+tests/            94 tests
 ```
 
 ## Sources

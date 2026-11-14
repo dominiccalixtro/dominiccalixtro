@@ -47,7 +47,9 @@ def _band(left: float, life: LifeConfig) -> Health:
 
 
 def assess(equity: Decimal, life: LifeConfig, min_notional: Decimal, previous: Health | None = None) -> Vitals:
-    left = float(equity / life.budget_php)
+    # Life left is measured above the death floor: with a ₱5,000 budget and a ₱2,500 floor,
+    # ₱3,750 is half its life, not three quarters.
+    left = float((equity - life.death_floor_php) / (life.budget_php - life.death_floor_php))
     if equity <= life.death_floor_php:
         return Vitals(
             equity,

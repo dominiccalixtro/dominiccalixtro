@@ -55,7 +55,7 @@ def _clamp(x: Decimal, lo: Decimal, hi: Decimal) -> Decimal:
     return min(max(x, lo), hi)
 
 
-def review(decision: dict, body: Body, cfg: BotConfig, now: int) -> Review:
+def review(decision: dict, body: Body, cfg: BotConfig, now: int, regimes: dict | None = None) -> Review:
     a, s = cfg.agent, body.state
     out = Review()
     raw = decision.get("actions") if isinstance(decision, dict) else None
@@ -125,6 +125,12 @@ def review(decision: dict, body: Body, cfg: BotConfig, now: int) -> Review:
             out.approved.append(o)
 
         else:  # BUY
+            r = (regimes or {}).get(o.symbol)
+            if a.trend_rule == "enforce" and (r is None or not r.up):
+                why = (f"its daily close is below its {r.days}-day average (downtrend)" if r
+                       else "its daily trend is unknown")
+                out.notes.append(f"{tag}: {why}; the trend rule only allows buying in an uptrend; blocked")
+                continue
             if s.rest_until > now:
                 out.notes.append(f"{tag}: resting after a losing streak until "
                                  f"{local_time(s.rest_until, a.utc_offset_hours)}; blocked")

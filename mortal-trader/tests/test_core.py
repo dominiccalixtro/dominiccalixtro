@@ -10,7 +10,7 @@ from mortalbot.life import Health, assess, size_multiplier
 from mortalbot.models import OrderRejected, floor_to_step, fmt_decimal, peso
 from mortalbot.risk import entry_quote_amount
 from mortalbot.state import BotIsDead, BotState, StateMismatch, StateStore, awaken
-from mortalbot.strategy import Action, decide
+from mortalbot.strategy import Action, decide, regime
 
 
 class Indicators(unittest.TestCase):
@@ -44,6 +44,7 @@ class Money(unittest.TestCase):
 class Life(unittest.TestCase):
     def setUp(self):
         self.life = BotConfig().life
+        self.life.budget_php = D("5000")
 
     def test_bands(self):
         mn = D("100")
@@ -71,6 +72,12 @@ class Life(unittest.TestCase):
         # Getting worse is immediate.
         self.assertIs(assess(D("3700"), self.life, D("100"), previous=Health.HEALTHY).health, Health.WOUNDED)
 
+    def test_life_is_measured_above_the_floor(self):
+        self.life.death_floor_php = D("2500")
+        v = assess(D("3750"), self.life, D("50"))
+        self.assertAlmostEqual(v.life_left, 0.5)  # half of the 2,500 it can lose
+        self.assertIs(v.health, Health.WOUNDED)
+
     def test_hurt_bots_trade_smaller(self):
         self.assertLess(size_multiplier(Health.CRITICAL, self.life), size_multiplier(Health.WOUNDED, self.life))
         self.assertLess(size_multiplier(Health.WOUNDED, self.life), size_multiplier(Health.HEALTHY, self.life))
@@ -78,8 +85,10 @@ class Life(unittest.TestCase):
 
 class Risk(unittest.TestCase):
     def kw(self, **over):
+        risk = BotConfig().risk
+        risk.risk_per_trade, risk.atr_stop_mult = 0.02, 2.5
         base = dict(equity=D("5000"), cash=D("5000"), price=D("100"), atr=D("2"), multiplier=1.0,
-                    risk=BotConfig().risk, fee_rate=D("0.003"), min_notional=D("100"))
+                    risk=risk, fee_rate=D("0.003"), min_notional=D("100"))
         base.update(over)
         return base
 
@@ -129,11 +138,23 @@ class StateAndRebirth(unittest.TestCase):
 
 
 class Strategy(unittest.TestCase):
-    def test_enters_on_bullish_crossover_above_trend(self):
-        cfg = small_cfg()
-        closes = [100.0] * 30 + [99, 98, 97, 96, 95] + [100, 106, 112]
-        acts = [decide(candles_from_closes(closes[:i]), cfg.strategy, False).action for i in range(15, len(closes) + 1)]
-        self.assertIn(Action.ENTER, acts)
+    def test_regime_up_down_and_streak(self):
+        up = regime("X", candles_from_closes([100.0] * 20 + [101, 102, 103]), 10)
+        self.assertTrue(up.up)
+        self.assertEqual(up.streak, 3)
+        self.assertGreater(up.distance_pct, 0)
+        down = regime("X", candles_from_closes([100.0] * 20 + [99, 98]), 10)
+        self.assertFalse(down.up)
+        self.assertIsNone(regime("X", candles_from_closes([100.0] * 5), 10))
+
+    def test_rules_enter_in_uptrend_exit_in_downtrend(self):
+        cfg = small_cfg().strategy
+        rising = candles_from_closes([100.0] * 20 + [105, 110])
+        falling = candles_from_closes([100.0] * 20 + [95])
+        self.assertIs(decide(rising, cfg, False).action, Action.ENTER)
+        self.assertIs(decide(rising, cfg, True).action, Action.HOLD)
+        self.assertIs(decide(falling, cfg, True).action, Action.EXIT)
+        self.assertIs(decide(falling, cfg, False).action, Action.HOLD)
 
     def test_holds_while_warming_up(self):
         d = decide(candles_from_closes([100.0] * 5), small_cfg().strategy, False)
@@ -159,7 +180,8 @@ class Config(unittest.TestCase):
 
     def test_example_config_loads(self):
         cfg = load_config(__file__.replace("tests/test_core.py", "config.example.toml"))
-        self.assertEqual(cfg.life.budget_php, D("5000"))
+        self.assertEqual(cfg.life.budget_php, D("2500"))
+        self.assertEqual(cfg.agent.trend_rule, "enforce")
 
 
 class Paper(unittest.TestCase):

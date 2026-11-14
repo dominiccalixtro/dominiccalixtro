@@ -4,18 +4,19 @@
 #   ANTHROPIC_API_KEY                 (Claude Console; billed separately from the Claude app)
 
 name = "mortal-001"       # each life gets its own name; a dead name stays dead
-brain = "claude"          # "claude": autonomous, reads news | "rules": simple EMA strategy, no API key
+brain = "claude"          # "claude": autonomous, reads news | "rules": the trend rule alone, no API key
 symbol = "BTCPHP"         # market for the rules brain (and for backtests)
 base_asset = "BTC"
 quote_asset = "PHP"
-interval = "1h"
+interval = "1d"           # the rules brain trades daily candles
 history = 300
 state_dir = "state"
 
 [life]
-budget_php = 5000         # its whole life: trading money AND the cost of its own thinking
-death_floor_php = 0       # 0 = dies when it can no longer afford the smallest order.
-                          # e.g. 2500 = "dies after losing half"
+budget_php = 2500         # its whole life: trading money AND the cost of its own thinking.
+                          # Fund the Coins.ph account with exactly this: a hard cap on what it can lose.
+death_floor_php = 0       # 0 = dies when it can no longer afford the smallest order (₱50).
+                          # Alternative: budget 5000 + floor 2500 = "starts with ₱5,000, dies after losing half"
 wounded_below = 0.75
 critical_below = 0.40
 wounded_size = 0.5
@@ -24,21 +25,24 @@ critical_size = 0.25
 [agent]
 model = "claude-opus-5-5" # most capable; see README for the cost of each model
 effort = "medium"         # low | medium | high | xhigh | max
-universe = ["BTCPHP", "ETHPHP", "SOLPHP", "XRPPHP"]   # the only coins it may ever buy
+universe = ["BTCPHP", "ETHPHP"]   # the only coins it may ever buy (SOL/XRP trended unreliably 2022-2026)
+trend_rule = "enforce"    # "enforce": buy only in daily uptrends, auto-sell after a close below the average
+                          # "advise": Claude sees the trend but may ignore it | "off"
 # Hard guardrails (code-enforced; Claude cannot change them)
-max_positions = 3
-max_position_pct = 0.5    # max share of equity in one coin
-max_buys_per_day = 4
-min_stop_pct = 2.0        # every buy gets a stop-loss between these
+max_positions = 2
+max_position_pct = 0.45   # max share of equity in one coin
+max_buys_per_day = 2
+min_stop_pct = 5.0        # every buy gets a disaster stop between these, below normal daily noise
 max_stop_pct = 15.0
 cash_reserve_pct = 0.03
-# When it thinks
-min_check_minutes = 60    # Claude picks its next check between these
-max_check_minutes = 1440
+# When it thinks: events wake it (trend flips, trend exits, stops, big moves);
+# otherwise Claude picks its next review between these
+min_check_minutes = 240
+max_check_minutes = 10080 # a week
 min_gap_minutes = 20
-wake_on_move_pct = 5.0    # wake early if a coin moves this much
+wake_on_move_pct = 8.0    # wake early if a coin moves this much
 # Metabolism
-daily_thinking_budget_php = 25
+daily_thinking_budget_php = 6
 usd_php = 58              # ASSUMPTION: set to today's USD->PHP rate
 charge_thinking_to_life = true
 upkeep_php_per_day = 0    # e.g. your server's daily cost
@@ -49,19 +53,17 @@ news_max_age_hours = 48
 journal_in_context = 8
 utc_offset_hours = 8      # Manila
 
-[strategy]                # rules brain only
-fast_ema = 12
-slow_ema = 26
-trend_ema = 100
+[strategy]
+trend_days = 50           # uptrend = daily close above the average of the last 50 daily closes
 atr_period = 14
 
 [risk]
-risk_per_trade = 0.02     # a stopped-out trade costs at most ~2% of equity (both brains)
-atr_stop_mult = 2.5
-trailing_stop = true
+risk_per_trade = 0.04     # a disaster stop-out costs at most ~4% of equity; trend exits usually cost far less
+atr_stop_mult = 3.0       # rules brain: disaster stop = 3 x daily ATR below entry
+trailing_stop = false     # trailing stops cut trend winners short in the 2022-2026 data
 max_position_fraction = 0.95
-max_consecutive_losses = 3
-rest_candles = 12         # rest this many hours after the losing streak
+max_consecutive_losses = 0  # no forced rest: trend following expects runs of small losses
+rest_candles = 0
 
 [execution]
 fee_rate = 0.003          # ASSUMPTION: set to your Coins.ph fee tier

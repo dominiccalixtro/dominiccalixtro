@@ -28,6 +28,7 @@ from .models import Candle, peso, ts_str
 from .news import Headline
 from .prompts import briefing, local_time
 from .state import BotState
+from .strategy import Regime, regime
 
 log = logging.getLogger("mortalbot")
 MINUTE = 60_000
@@ -39,15 +40,20 @@ def next_local_midnight(now: int, offset_hours: int) -> int:
     return int((midnight - timedelta(hours=offset_hours)).timestamp() * 1000)
 
 
+REGIME_REFRESH_MS = 15 * MINUTE
+
+
 class ClaudeTrader:
     def __init__(self, cfg: BotConfig, body: Body, brain: ClaudeBrain, *,
-                 klines: Callable[[str], list[Candle]], headlines: Callable[[int], list[Headline]]):
+                 klines: Callable[[str, str, int], list[Candle]], headlines: Callable[[int], list[Headline]]):
         self.cfg = cfg
         self.body = body
         self.brain = brain
-        self.klines = klines
+        self.klines = klines  # (symbol, interval, limit) -> candles, oldest first
         self.headlines = headlines
         self.tired_until = 0  # brain unavailable or out of budget: don't retry before this
+        self._regimes: dict[str, Regime] = {}
+        self._regimes_at = 0
 
     @property
     def state(self) -> BotState:
@@ -61,13 +67,58 @@ class ClaudeTrader:
         """What Claude may name: its tradable universe plus anything it still holds."""
         return sorted(set(self.cfg.agent.universe) & set(self.body.rules) | set(self.state.positions))
 
+    # ---- the daily trend (free: code only) --------------------------------------
+
+    def regimes(self, now: int) -> dict[str, Regime]:
+        """Daily trend per coin from closed daily candles, refreshed every 15 minutes."""
+        if self.cfg.agent.trend_rule == "off":
+            return {}
+        if now - self._regimes_at < REGIME_REFRESH_MS and self._regimes:
+            return self._regimes
+        days = self.cfg.strategy.trend_days
+        fresh = {}
+        for sym in self.symbols():
+            try:
+                daily = [c for c in self.klines(sym, "1d", days + 40) if c.close_time < now]
+                r = regime(sym, daily, days, self.cfg.strategy.atr_period)
+            except Exception as e:  # keep the last known trend rather than none
+                log.warning("no daily candles for %s: %s", sym, e)
+                r = self._regimes.get(sym)
+            if r:
+                fresh[sym] = r
+        self._regimes, self._regimes_at = fresh, now
+        return fresh
+
+    def _trend_reflexes(self, now: int) -> list[str]:
+        """Wake on trend flips; under "enforce", sell a coin after a daily close below its average."""
+        s, a = self.state, self.cfg.agent
+        events = []
+        regimes = self.regimes(now)
+        for sym, r in regimes.items():
+            before = s.regime_seen.get(sym)
+            s.regime_seen[sym] = r.up
+            if before is not None and before != r.up:
+                side = "above" if r.up else "below"
+                events.append(f"{sym} turned {'UP' if r.up else 'DOWN'}: its daily close is {side} its "
+                              f"{r.days}-day average")
+        if a.trend_rule == "enforce":
+            for sym, pos in list(s.positions.items()):
+                r = regimes.get(sym)
+                if r and not r.up and r.close_time > pos.entry_time:
+                    fill = self.body.sell(sym, now, f"trend exit: daily close {peso(r.close)} below its "
+                                                    f"{r.days}-day average {peso(r.average)}")
+                    if fill:
+                        events.append(f"the trend rule sold {sym} (daily close below its {r.days}-day average)")
+        return events
+
     # ---- every tick -----------------------------------------------------------
 
     def step(self, prices: dict[str, Decimal], now: int) -> None:
         if not self.alive:
             return
         self.body.mark(prices)
-        self.state.pending_wake = (self.state.pending_wake + self.body.reflexes(now))[-10:]
+        events = self.body.reflexes(now) + self._trend_reflexes(now)
+        self.state.pending_wake = (self.state.pending_wake + events)[-10:]
         self.body.accrue_upkeep(now)
         self.body.check_vitals(now)
         if not self.alive:
@@ -112,7 +163,7 @@ class ClaudeTrader:
         snaps: list[CoinSnapshot] = []
         for sym in symbols:
             try:
-                snap = snapshot(sym, self.klines(sym))
+                snap = snapshot(sym, self.klines(sym, "1h", 200))
                 if snap:
                     snaps.append(snap)
             except Exception as e:  # a missing chart must not stop the thought
@@ -122,8 +173,10 @@ class ClaudeTrader:
         except Exception as e:
             log.warning("news unavailable: %s", e)
             heads = []
+        regimes = self.regimes(now)
         text = briefing(cfg=self.cfg, state=s, now=now, reason=reason, equity=self.body.equity(),
-                        invested=self.body.invested(), snaps=snaps, headlines=heads, prices=dict(s.last_prices))
+                        invested=self.body.invested(), snaps=snaps, headlines=heads, prices=dict(s.last_prices),
+                        regimes=regimes)
         try:
             thought = self.brain.think(text, symbols)
         except BrainUnavailable as e:
@@ -140,7 +193,7 @@ class ClaudeTrader:
         s.think_spent_today += cost
 
         decision = thought.decision or {}
-        verdict = review(decision, self.body, self.cfg, now) if thought.decision else None
+        verdict = review(decision, self.body, self.cfg, now, regimes) if thought.decision else None
         did = self._execute(verdict.approved, now) if verdict else []
         try:
             minutes = int(decision.get("next_check_minutes") or 0)

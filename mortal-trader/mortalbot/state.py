@@ -84,6 +84,7 @@ class BotState:
     buys_today: int = 0
     think_prices: dict[str, Decimal] = field(default_factory=dict)
     pending_wake: list[str] = field(default_factory=list)
+    regime_seen: dict[str, bool] = field(default_factory=dict)  # last known daily trend per coin (True = up)
     dust: dict[str, Decimal] = field(default_factory=dict)
     trades: list[dict] = field(default_factory=list)
     journal: list[dict] = field(default_factory=list)

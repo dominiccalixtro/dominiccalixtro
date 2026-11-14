@@ -29,8 +29,11 @@ def candles_from_closes(closes, start=1_767_225_600_000, spread=0.002):
 def small_cfg(**life):
     """Short indicator periods so tests need few candles."""
     cfg = BotConfig()
-    cfg.strategy.fast_ema, cfg.strategy.slow_ema, cfg.strategy.trend_ema, cfg.strategy.atr_period = 3, 6, 10, 5
+    cfg.strategy.trend_days, cfg.strategy.atr_period = 10, 5
     cfg.history = 50
+    cfg.interval = "1h"  # synthetic test candles are hourly
+    cfg.life.budget_php = D("5000")
+    cfg.risk.risk_per_trade = 0.02
     cfg.execution.fee_rate = D("0.001")
     cfg.execution.slippage_bps = D("0")
     for k, v in life.items():

@@ -164,10 +164,13 @@ class ShadowMode(unittest.TestCase):
             ShadowBroker(c, paper).market_buy(r, D("1000"))
 
 
-def candle_rows(n, now_ms, price=5_000_000.0):
+def candle_rows(n, now_ms, price=5_000_000.0, rise=0.0):
     start = now_ms - n * HOUR
-    return [[start + i * HOUR, str(price), str(price * 1.001), str(price * 0.999), str(price), "1",
-             start + (i + 1) * HOUR - 1] for i in range(n)]
+    rows = []
+    for i in range(n):
+        p = price * (1 + rise * i)
+        rows.append([start + i * HOUR, str(p), str(p * 1.001), str(p * 0.999), str(p), "1", start + (i + 1) * HOUR - 1])
+    return rows
 
 
 class Runner(unittest.TestCase):
@@ -228,7 +231,7 @@ class Runner(unittest.TestCase):
         routes[("GET", "/openapi/quote/v1/ticker/price")] = (200, [
             {"symbol": "BTCPHP", "price": "5000000"}, {"symbol": "ETHPHP", "price": "200000"},
             {"symbol": "XRPPHP", "price": "30"}])
-        routes[("GET", "/openapi/quote/v1/klines")] = (200, candle_rows(200, self.NOW))
+        routes[("GET", "/openapi/quote/v1/klines")] = (200, candle_rows(200, self.NOW, rise=0.001))  # uptrend
 
         class Brain:
             def __init__(self):

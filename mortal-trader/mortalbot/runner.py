@@ -151,7 +151,7 @@ def run_agent(cfg: BotConfig, mode: str, client: CoinsPhClient, broker, store: S
         def headlines(now: int) -> list:
             return fetch_headlines(a.news_feeds, now_ms=now, max_items=a.news_max_items,
                                    max_age_hours=a.news_max_age_hours)
-    trader = ClaudeTrader(cfg, body, brain, klines=lambda sym: client.klines(sym, "1h", limit=200),
+    trader = ClaudeTrader(cfg, body, brain, klines=lambda sym, interval, limit: client.klines(sym, interval, limit=limit),
                           headlines=headlines)
 
     def tick(now: int) -> None:

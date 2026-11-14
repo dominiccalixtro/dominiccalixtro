@@ -21,11 +21,12 @@ class ConfigError(ValueError):
 
 @dataclass
 class LifeConfig:
-    budget_php: Decimal = Decimal("5000")
+    # Its whole life: fund the Coins.ph account with exactly this, so it can never lose more.
+    budget_php: Decimal = Decimal("2500")
     # Equity at or below this kills the bot. 0 means "dies when the money is gone";
     # in practice it then dies when it can no longer afford the exchange's smallest order.
     death_floor_php: Decimal = Decimal("0")
-    # Health bands, as a fraction of the starting budget.
+    # Health bands, as a fraction of its life left (equity above the death floor).
     wounded_below: float = 0.75
     critical_below: float = 0.40
     # How much of its normal risk a hurt bot is willing to take.
@@ -35,20 +36,22 @@ class LifeConfig:
 
 @dataclass
 class StrategyConfig:
-    fast_ema: int = 12
-    slow_ema: int = 26
-    trend_ema: int = 100
+    # A coin is in an uptrend while its daily close is above its average close of the last
+    # `trend_days` days. On 2022-2026 Coins.ph data this rule halved the worst losses on BTC and ETH.
+    trend_days: int = 50
     atr_period: int = 14
 
 
 @dataclass
 class RiskConfig:
-    risk_per_trade: float = 0.02  # fraction of equity lost if the stop-loss is hit
-    atr_stop_mult: float = 2.5  # stop distance = ATR x this
-    trailing_stop: bool = True
+    risk_per_trade: float = 0.04  # max equity lost if the disaster stop is hit (trend exits usually cost far less)
+    atr_stop_mult: float = 3.0  # rules brain: disaster stop = 3 x daily ATR below entry
+    trailing_stop: bool = False  # trailing stops cut trend winners short in the 2022-2026 data
     max_position_fraction: float = 0.95  # never put more than this share of cash into one trade
-    max_consecutive_losses: int = 3  # after this many losses in a row...
-    rest_candles: int = 12  # ...sit out this many candles. 0 disables resting.
+    # Resting after a losing streak. Off by default: trend following expects many small losses
+    # in a row (about 3 in 4 trades lose), and sitting out risks missing the trend that pays for them.
+    max_consecutive_losses: int = 0
+    rest_candles: int = 0
 
 
 @dataclass
@@ -79,21 +82,28 @@ class AgentConfig:
 
     model: str = "claude-opus-5-5"
     effort: str = "medium"  # low | medium | high | xhigh | max (more effort = better reasoning, more cost)
-    universe: list = field(default_factory=lambda: ["BTCPHP", "ETHPHP", "SOLPHP", "XRPPHP"])
+    # BTC and ETH only: on 2022-2026 data, trend rules on SOL and XRP were unreliable (40-75% drops).
+    universe: list = field(default_factory=lambda: ["BTCPHP", "ETHPHP"])
+    # The trend rule (see StrategyConfig.trend_days):
+    #   "enforce": code blocks buys below the average and sells a held coin after a daily close below it
+    #   "advise":  Claude sees the trend but code does not enforce it
+    #   "off":     no trend data
+    trend_rule: str = "enforce"
     # Guardrails. Claude decides inside these; code enforces them and Claude cannot change them.
-    max_positions: int = 3
-    max_position_pct: float = 0.5  # one coin may be at most this share of equity
-    max_buys_per_day: int = 4
-    min_stop_pct: float = 2.0  # every buy has a stop-loss between these distances
-    max_stop_pct: float = 15.0
+    max_positions: int = 2
+    max_position_pct: float = 0.45  # one coin may be at most this share of equity
+    max_buys_per_day: int = 2
+    min_stop_pct: float = 5.0  # every buy has a disaster stop between these distances; it sits below
+    max_stop_pct: float = 15.0  # normal daily noise so the trend exit, not the stop, usually closes a trade
     cash_reserve_pct: float = 0.03
-    # When it thinks. Claude picks its next check inside these bounds.
-    min_check_minutes: int = 60
-    max_check_minutes: int = 1440
+    # When it thinks. Events wake it (trend flips, trend exits, stops, big moves); between events
+    # Claude picks its next review inside these bounds.
+    min_check_minutes: int = 240
+    max_check_minutes: int = 10080  # a week
     min_gap_minutes: int = 20  # even urgent wake-ups wait this long after the last thought
-    wake_on_move_pct: float = 5.0  # wake early if any coin moves this much since the last thought
+    wake_on_move_pct: float = 8.0  # wake early if any coin moves this much since the last thought
     # Metabolism: thinking costs real money, and it comes out of the bot's life.
-    daily_thinking_budget_php: Decimal = Decimal("25")
+    daily_thinking_budget_php: Decimal = Decimal("6")
     usd_php: Decimal = Decimal("58")  # ASSUMPTION: set to the current exchange rate
     charge_thinking_to_life: bool = True
     upkeep_php_per_day: Decimal = Decimal("0")  # e.g. your server's cost per day
@@ -113,7 +123,7 @@ class BotConfig:
     symbol: str = "BTCPHP"  # the market the rules brain trades
     base_asset: str = "BTC"
     quote_asset: str = "PHP"
-    interval: str = "1h"
+    interval: str = "1d"  # candle size for the rules brain
     history: int = 300  # candles fed to the strategy each decision
     state_dir: str = "state"
     life: LifeConfig = field(default_factory=LifeConfig)
@@ -124,7 +134,7 @@ class BotConfig:
 
 
 def warmup_candles(s: StrategyConfig) -> int:
-    return max(s.slow_ema, s.trend_ema, s.atr_period) + 2
+    return max(s.trend_days, s.atr_period) + 2
 
 
 def _coerce(cls, data: dict, section: str):
@@ -195,10 +205,8 @@ def validate(cfg: BotConfig) -> None:
     if not (0 < life.critical_size <= life.wounded_size <= 1):
         errs.append("life: need 0 < critical_size <= wounded_size <= 1")
     s = cfg.strategy
-    if not (1 < s.fast_ema < s.slow_ema):
-        errs.append("strategy: need 1 < fast_ema < slow_ema")
-    if s.trend_ema < 2 or s.atr_period < 2:
-        errs.append("strategy: trend_ema and atr_period must be >= 2")
+    if not (2 <= s.trend_days <= 400) or s.atr_period < 2:
+        errs.append("strategy: trend_days must be 2-400 and atr_period >= 2")
     if cfg.history < warmup_candles(s):
         errs.append(f"history must be at least {warmup_candles(s)} for these indicator periods")
     r = cfg.risk
@@ -225,6 +233,8 @@ def validate(cfg: BotConfig) -> None:
     if not a.universe or any(not re.fullmatch(r"[A-Z0-9]{2,15}", s) or not s.endswith(cfg.quote_asset)
                              for s in a.universe):
         errs.append(f"agent.universe: list symbols like \"BTC{cfg.quote_asset}\"")
+    if a.trend_rule not in ("enforce", "advise", "off"):
+        errs.append('agent.trend_rule must be "enforce", "advise" or "off"')
     if a.effort not in ("low", "medium", "high", "xhigh", "max"):
         errs.append("agent.effort must be low, medium, high, xhigh or max")
     if not (1 <= a.max_positions <= 10):
